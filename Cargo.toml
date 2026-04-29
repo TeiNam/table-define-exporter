@@ -1,0 +1,28 @@
+[package]
+name = "td-export"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[[bin]]
+name = "td-export"
+path = "src/main.rs"
+
+[lib]
+name = "td_export"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+sqlx = { version = "0.8", features = ["mysql", "runtime-tokio", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+rust_xlsxwriter = "0.80"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+rpassword = "6"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"

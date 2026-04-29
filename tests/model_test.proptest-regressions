@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7354e8c024427d5f2508229472d4c63144b517e03d2acc1be5bd79fcb64daf9e # shrinks to password = "0"
+cc bbe4e85bd653419ee733d74cba01c064d3fe51fcf30163f39630cf4ff4b80271 # shrinks to password = "a", endpoint = "aaa", port = 1

@@ -1,0 +1,15 @@
+{
+  "name": "Pre-Write Guard",
+  "version": "1.0.0",
+  "description": "Pre-Write Guard",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": [
+      "write"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Before this write, check ALL of the following in one pass:\n1. SIZE — If the content exceeds 800 lines, BLOCK the write. Split into focused modules under 400 lines.\n2. SECRETS — No hardcoded API keys, tokens, passwords, or connection strings. Use env vars.\n3. DOC LOCATION — If creating a .md or .txt file outside docs/, .kiro/, README.md, CONTRIBUTING.md, CHANGELOG.md, or LICENSE, warn that docs should go in docs/.\nOnly report issues found. If all checks pass, proceed silently."
+  }
+}
