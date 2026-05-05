@@ -9,7 +9,8 @@ use crate::{
     },
 };
 
-pub struct DbClient {
+/// MySQL 전용 DB 클라이언트
+pub struct MySqlClient {
     pool: sqlx::MySqlPool,
 }
 
@@ -21,7 +22,7 @@ const SYSTEM_SCHEMAS: &[&str] = &[
     "tmp",
 ];
 
-impl DbClient {
+impl MySqlClient {
     /// 커넥션 풀 생성 + `SELECT 1` 검증
     pub async fn connect(config: &RunConfig) -> Result<Self, AppError> {
         let url = format!(

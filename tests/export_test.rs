@@ -392,6 +392,8 @@ proptest! {
             target_db: None,
             except_tables: None,
             output_format: OutputFormat::Excel,
+            db_type: td_export::model::DbType::MySql,
+            database: None,
         };
 
         let mut exporter = create_exporter(OutputFormat::Excel);

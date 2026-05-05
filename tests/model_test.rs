@@ -1,5 +1,5 @@
 use proptest::prelude::*;
-use td_export::model::{OutputFormat, RunConfig};
+use td_export::model::{DbType, OutputFormat, RunConfig};
 
 // Property 1a: OutputFormat 왕복 (Round-trip)
 // 모든 변형에 대해 from_str(as_str(fmt)) == fmt
@@ -88,6 +88,8 @@ proptest! {
             target_db: None,
             except_tables: None,
             output_format: OutputFormat::Excel,
+            db_type: td_export::model::DbType::MySql,
+            database: None,
         };
         let debug_output = format!("{:?}", config);
         // "password: \"<실제값>\"" 형태로 노출되지 않아야 함
@@ -115,6 +117,8 @@ proptest! {
             target_db: None,
             except_tables: None,
             output_format: OutputFormat::Excel,
+            db_type: td_export::model::DbType::MySql,
+            database: None,
         };
         let debug_str = format!("{:?}", config);
         // password 필드 값이 [REDACTED]로 대체되었는지 확인
@@ -139,6 +143,8 @@ fn run_config_debug_redacts_password() {
         target_db: None,
         except_tables: None,
         output_format: OutputFormat::Excel,
+        db_type: td_export::model::DbType::MySql,
+        database: None,
     };
     let debug_str = format!("{:?}", config);
     assert!(!debug_str.contains("super_secret_password"));
@@ -237,4 +243,106 @@ fn error_chain_invalid_output_format() {
     let display = format!("{}", app_err);
     assert!(display.contains("csv"));
     assert!(app_err.source().is_none());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property 17: DbType 왕복 및 전체성 (Round-trip & Totality)
+// Validates: Requirements 1.1, 1.5
+// ─────────────────────────────────────────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Validates: Requirements 1.1, 1.5**
+    ///
+    /// Property 17a: DbType 왕복 (Round-trip)
+    /// 모든 변형에 대해 from_str(as_str(db_type)) == db_type
+    #[test]
+    fn db_type_round_trip(db_type in prop_oneof![
+        Just(DbType::MySql),
+        Just(DbType::Postgres),
+    ]) {
+        let s = db_type.as_str();
+        let parsed = DbType::from_str(s).unwrap();
+        prop_assert_eq!(parsed, db_type);
+    }
+
+    /// **Validates: Requirements 1.5**
+    ///
+    /// Property 17b: 전체성 (Totality)
+    /// 임의 문자열에 대해 패닉 없이 Ok 또는 Err 반환
+    #[test]
+    fn db_type_totality(s in ".*") {
+        let _ = DbType::from_str(&s);
+    }
+
+    /// **Validates: Requirements 1.1**
+    ///
+    /// Property 17c: 대소문자 무관 파싱 (Case-insensitivity)
+    /// 유효한 db-type 문자열의 임의 대소문자 조합에 대해 올바른 변형 반환
+    #[test]
+    fn db_type_case_insensitive(
+        base in prop_oneof![Just("mysql"), Just("postgres"), Just("postgresql")],
+        mask in proptest::bits::u64::ANY,
+    ) {
+        let mixed: String = base.chars().enumerate().map(|(i, c)| {
+            if (mask >> i) & 1 == 1 { c.to_ascii_uppercase() } else { c }
+        }).collect();
+        let result = DbType::from_str(&mixed);
+        prop_assert!(result.is_ok(), "대소문자 조합 '{mixed}'에 대해 파싱 실패");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DbType 예시 기반 단위 테스트
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn db_type_from_str_valid() {
+    assert_eq!(DbType::from_str("mysql").unwrap(), DbType::MySql);
+    assert_eq!(DbType::from_str("postgres").unwrap(), DbType::Postgres);
+    assert_eq!(DbType::from_str("postgresql").unwrap(), DbType::Postgres);
+    assert_eq!(DbType::from_str("MYSQL").unwrap(), DbType::MySql);
+    assert_eq!(DbType::from_str("Postgres").unwrap(), DbType::Postgres);
+    assert_eq!(DbType::from_str("PostgreSQL").unwrap(), DbType::Postgres);
+}
+
+#[test]
+fn db_type_from_str_invalid() {
+    assert!(DbType::from_str("sqlite").is_err());
+    assert!(DbType::from_str("").is_err());
+    assert!(DbType::from_str("oracle").is_err());
+    assert!(DbType::from_str("pg").is_err());
+}
+
+#[test]
+fn db_type_as_str_values() {
+    assert_eq!(DbType::MySql.as_str(), "mysql");
+    assert_eq!(DbType::Postgres.as_str(), "postgres");
+}
+
+#[test]
+fn db_type_default_port_values() {
+    assert_eq!(DbType::MySql.default_port(), 3306);
+    assert_eq!(DbType::Postgres.default_port(), 5432);
+}
+
+#[test]
+fn run_config_debug_includes_db_type_and_database() {
+    let config = RunConfig {
+        endpoint: "localhost".to_string(),
+        port: 5432,
+        user: "pguser".to_string(),
+        password: "secret".to_string(),
+        target_db: None,
+        except_tables: None,
+        output_format: OutputFormat::Excel,
+        db_type: DbType::Postgres,
+        database: Some("mydb".to_string()),
+    };
+    let debug_str = format!("{:?}", config);
+    assert!(debug_str.contains("db_type: Postgres"));
+    assert!(debug_str.contains("mydb"));
+    assert!(debug_str.contains("[REDACTED]"));
+    assert!(!debug_str.contains("secret"));
 }

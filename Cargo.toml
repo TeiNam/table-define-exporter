@@ -14,7 +14,8 @@ path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-sqlx = { version = "0.8", features = ["mysql", "runtime-tokio", "macros"] }
+sqlx = { version = "0.8", features = ["mysql", "postgres", "runtime-tokio", "macros"] }
+async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 rust_xlsxwriter = "0.80"
 tracing = "0.1"
