@@ -52,30 +52,41 @@ cargo test
 | 플래그 | 기본값 | 설명 |
 |--------|--------|------|
 | `--db-type` | `mysql` | DB 종류 선택: `mysql`, `postgres` (대소문자 무관) |
-| `--output` | `excel` | 출력 포맷 선택: `excel`, `markdown`, `sql` |
+| `--output` | `markdown` | 출력 포맷 선택: `excel`, `markdown`, `sql` |
+| `--endpoint` | — | DB 서버 호스트명 또는 IP (미지정 시 대화형 입력) |
+| `--port` | DB 종류별 (MySQL 3306 / PostgreSQL 5432) | DB 서버 포트 |
+| `--user` | — | DB 사용자명 (미지정 시 대화형 입력) |
+| `--database` | — | PostgreSQL 데이터베이스 이름 (PostgreSQL 전용) |
+| `--target-db` | — | 대상 스키마 목록 (쉼표 구분) |
+| `--except-tables` | — | 제외 테이블 패턴 (쉼표 구분, 와일드카드 `%` 사용 가능) |
 | `--help` | — | 도움말 출력 |
 | `--version` | — | 버전 정보 출력 |
+
+> **참고**: 모든 플래그는 선택사항입니다. 지정하지 않은 항목은 실행 시 대화형 프롬프트로 입력받습니다. 비밀번호는 보안상 CLI 플래그로 받지 않고 항상 프롬프트로만 입력받습니다.
 
 ### 실행 예시
 
 ```bash
-# MySQL + Excel 출력 (기본값)
+# 완전 대화형 (모든 항목을 프롬프트로 입력, 기본 출력 포맷: Markdown)
 ./td-export
 
-# MySQL + Markdown 출력
-./td-export --output markdown
+# MySQL + Excel 출력
+./td-export --output excel
 
 # MySQL + SQL 출력
 ./td-export --output sql
 
-# PostgreSQL + Excel 출력
+# PostgreSQL + Markdown 출력
 ./td-export --db-type postgres
 
-# PostgreSQL + Markdown 출력
-./td-export --db-type postgres --output markdown
+# PostgreSQL + Excel 출력
+./td-export --db-type postgres --output excel
 
-# PostgreSQL + SQL 출력
-./td-export --db-type postgres --output sql
+# 접속 정보까지 CLI로 지정 (비밀번호만 프롬프트)
+./td-export --db-type postgres --endpoint db.example.com --user postgres --database myapp --target-db public,app_schema
+
+# 제외 패턴 지정
+./td-export --except-tables 'tmp_%,log_%'
 ```
 
 ### 대화식 입력 순서

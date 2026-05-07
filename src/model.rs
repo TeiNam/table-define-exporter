@@ -36,6 +36,52 @@ impl OutputFormat {
     }
 }
 
+/// 지원하는 DB 종류
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbType {
+    MySql,
+    Postgres,
+}
+
+impl DbType {
+    /// 문자열을 DbType으로 파싱한다. 대소문자 무관.
+    /// - `"mysql"` → `MySql`
+    /// - `"postgres"` | `"postgresql"` → `Postgres`
+    /// - 그 외 → `AppError::InvalidDbType`
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Result<Self, crate::error::AppError> {
+        match s.to_ascii_lowercase().as_str() {
+            "mysql" => Ok(Self::MySql),
+            "postgres" | "postgresql" => Ok(Self::Postgres),
+            _ => Err(crate::error::AppError::InvalidDbType(s.to_string())),
+        }
+    }
+
+    /// 정규화된 문자열 표현 (CLI 기본값 매칭 용도)
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MySql => "mysql",
+            Self::Postgres => "postgres",
+        }
+    }
+
+    /// 사람이 읽기 좋은 표시 이름
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::MySql => "MySQL",
+            Self::Postgres => "PostgreSQL",
+        }
+    }
+
+    /// DB 종류별 기본 포트
+    pub fn default_port(&self) -> u16 {
+        match self {
+            Self::MySql => 3306,
+            Self::Postgres => 5432,
+        }
+    }
+}
+
 /// 한 번의 실행에 필요한 모든 설정값 (불변)
 #[derive(Clone)]
 pub struct RunConfig {
@@ -46,6 +92,9 @@ pub struct RunConfig {
     pub target_db: Option<Vec<String>>,
     pub except_tables: Option<Vec<String>>,
     pub output_format: OutputFormat,
+    pub db_type: DbType,
+    /// PostgreSQL 전용: 접속할 데이터베이스 이름. MySQL에서는 사용하지 않음.
+    pub database: Option<String>,
 }
 
 /// Debug 구현에서 password 필드를 [REDACTED]로 대체
@@ -59,6 +108,8 @@ impl std::fmt::Debug for RunConfig {
             .field("target_db", &self.target_db)
             .field("except_tables", &self.except_tables)
             .field("output_format", &self.output_format)
+            .field("db_type", &self.db_type)
+            .field("database", &self.database)
             .finish()
     }
 }

@@ -1,19 +1,84 @@
 use clap::Parser;
 use std::process;
 
-use td_export::{config, db::DbClient, export::create_exporter, model::OutputFormat};
+use td_export::{
+    config::{self, CliOverrides},
+    db::{DbClient, DbClientEnum},
+    export::create_exporter,
+    model::{DbType, OutputFormat},
+};
 
-/// Table Definition Export - MySQL 테이블 정의서 내보내기 도구
+/// Table Definition Export - MySQL/PostgreSQL 테이블 정의서 내보내기 도구
+///
+/// 모든 플래그는 선택사항입니다. 지정되지 않은 값은 실행 시 대화형으로 입력받습니다.
+/// 비밀번호는 보안상 항상 프롬프트로만 입력받으며 CLI 플래그로 받지 않습니다.
 #[derive(Parser)]
 #[command(
     name = "td-export",
     version,
-    about = "Table Definition Export - MySQL 테이블 정의서를 Excel/Markdown/SQL로 내보냅니다"
+    about = "Table Definition Export - MySQL/PostgreSQL 테이블 정의서를 Excel/Markdown/SQL로 내보냅니다"
 )]
 struct Cli {
     /// 출력 포맷: excel, markdown, sql
-    #[arg(long, default_value = "excel")]
-    output: String,
+    #[arg(long, value_name = "FORMAT")]
+    output: Option<String>,
+
+    /// DB 종류: mysql, postgres
+    #[arg(long = "db-type", value_name = "TYPE")]
+    db_type: Option<String>,
+
+    /// DB 서버 호스트명 또는 IP
+    #[arg(long, value_name = "HOST")]
+    endpoint: Option<String>,
+
+    /// DB 서버 포트 (미지정 시 DB 종류별 기본값: mysql=3306, postgres=5432)
+    #[arg(long, value_name = "PORT")]
+    port: Option<u16>,
+
+    /// DB 사용자명
+    #[arg(long, value_name = "USER")]
+    user: Option<String>,
+
+    /// PostgreSQL 데이터베이스 이름 (PostgreSQL 전용, 필수)
+    #[arg(long, value_name = "NAME")]
+    database: Option<String>,
+
+    /// 대상 스키마 목록 (쉼표 구분, 미지정 시 전체 비시스템 스키마)
+    #[arg(long = "target-db", value_name = "SCHEMAS", value_delimiter = ',')]
+    target_db: Option<Vec<String>>,
+
+    /// 제외 테이블 패턴 (쉼표 구분, 와일드카드 `%` 사용 가능)
+    #[arg(
+        long = "except-tables",
+        value_name = "PATTERNS",
+        value_delimiter = ','
+    )]
+    except_tables: Option<Vec<String>>,
+}
+
+impl Cli {
+    /// 파싱된 CLI 인자를 `CliOverrides`로 변환한다.
+    /// 잘못된 문자열 값(출력 포맷, DB 종류)은 여기서 검증한다.
+    fn into_overrides(self) -> Result<CliOverrides, td_export::error::AppError> {
+        let output_format = match self.output {
+            Some(v) => Some(OutputFormat::from_str(&v)?),
+            None => None,
+        };
+        let db_type = match self.db_type {
+            Some(v) => Some(DbType::from_str(&v)?),
+            None => None,
+        };
+        Ok(CliOverrides {
+            output_format,
+            db_type,
+            endpoint: self.endpoint,
+            port: self.port,
+            user: self.user,
+            database: self.database,
+            target_db: self.target_db,
+            except_tables: self.except_tables,
+        })
+    }
 }
 
 #[tokio::main]
@@ -26,17 +91,17 @@ async fn main() {
     // 앱 이름/버전 로그
     tracing::info!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
-    // 출력 포맷 파싱
-    let output_format = match OutputFormat::from_str(&cli.output) {
-        Ok(fmt) => fmt,
+    // CLI 오버라이드 변환 (잘못된 포맷/DB 종류 문자열 검증)
+    let overrides = match cli.into_overrides() {
+        Ok(o) => o,
         Err(e) => {
             tracing::error!("{}", e);
             process::exit(1);
         }
     };
 
-    // 대화식 설정 수집
-    let config = match config::load_config(output_format) {
+    // 대화식 설정 수집 (CLI 오버라이드가 있는 필드는 프롬프트 생략)
+    let config = match config::load_config(overrides) {
         Ok(c) => c,
         Err(e) => {
             tracing::error!("{}", e);
@@ -44,8 +109,10 @@ async fn main() {
         }
     };
 
+    let output_format = config.output_format;
+
     // DB 연결
-    let db = match DbClient::connect(&config).await {
+    let db = match DbClientEnum::connect(&config).await {
         Ok(client) => {
             tracing::info!("DB Connect Success");
             client

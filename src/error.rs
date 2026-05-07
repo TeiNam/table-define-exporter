@@ -5,6 +5,9 @@ pub enum AppError {
     #[error("잘못된 출력 포맷: {0}")]
     InvalidOutputFormat(String),
 
+    #[error("잘못된 DB 종류: {0}")]
+    InvalidDbType(String),
+
     #[error("필수 입력 누락: {0}")]
     MissingInput(String),
 

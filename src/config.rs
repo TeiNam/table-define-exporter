@@ -2,8 +2,24 @@ use std::io::{self, BufRead, Write};
 
 use crate::{
     error::AppError,
-    model::{OutputFormat, RunConfig},
+    model::{DbType, OutputFormat, RunConfig},
 };
+
+/// CLI에서 전달된 선택적 오버라이드 값.
+///
+/// 각 필드가 `Some`이면 대화형 프롬프트를 건너뛰고 해당 값을 그대로 사용한다.
+/// `None`이면 기존과 동일하게 대화형 프롬프트로 사용자에게 묻는다.
+#[derive(Debug, Default, Clone)]
+pub struct CliOverrides {
+    pub output_format: Option<OutputFormat>,
+    pub db_type: Option<DbType>,
+    pub endpoint: Option<String>,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+    pub database: Option<String>,
+    pub target_db: Option<Vec<String>>,
+    pub except_tables: Option<Vec<String>>,
+}
 
 /// 프롬프트를 출력하고 stdin에서 한 줄을 읽어 반환합니다.
 /// 줄 끝의 개행 문자(\n, \r)는 제거됩니다.
@@ -21,12 +37,12 @@ fn prompt_and_read(prompt: &str) -> Result<String, AppError> {
     Ok(line.trim_end_matches(['\n', '\r']).to_string())
 }
 
-/// 포트 문자열을 파싱합니다.
-/// - 빈 문자열 → 기본값 3306
+/// 포트 문자열을 지정된 기본값으로 파싱한다.
+/// - 빈 문자열 → `default`
 /// - 그 외 → u16 파싱 후 1..=65535 범위 검증
-pub(crate) fn parse_port(input: &str) -> Result<u16, AppError> {
+pub(crate) fn parse_port_with_default(input: &str, default: u16) -> Result<u16, AppError> {
     if input.is_empty() {
-        return Ok(3306);
+        return Ok(default);
     }
     let n: u32 = input
         .parse()
@@ -35,6 +51,12 @@ pub(crate) fn parse_port(input: &str) -> Result<u16, AppError> {
         return Err(AppError::InvalidPort(input.to_string()));
     }
     Ok(n as u16)
+}
+
+/// 기존 호환: MySQL 기본 포트(3306)를 기준으로 파싱한다. (테스트 전용)
+#[cfg(test)]
+pub(crate) fn parse_port(input: &str) -> Result<u16, AppError> {
+    parse_port_with_default(input, DbType::MySql.default_port())
 }
 
 /// 쉼표 구분 문자열을 파싱합니다.
@@ -48,39 +70,118 @@ pub(crate) fn parse_comma_separated(input: &str) -> Option<Vec<String>> {
     }
 }
 
+/// CLI 오버라이드가 없으면 대화형 프롬프트로 출력 포맷을 묻는다.
+fn resolve_output_format(override_val: Option<OutputFormat>) -> Result<OutputFormat, AppError> {
+    if let Some(fmt) = override_val {
+        return Ok(fmt);
+    }
+    let input = prompt_and_read("Output Format (excel/markdown/sql, default: markdown) : ")?;
+    if input.is_empty() {
+        Ok(OutputFormat::Markdown)
+    } else {
+        OutputFormat::from_str(&input)
+    }
+}
+
+/// CLI 오버라이드가 없으면 대화형 프롬프트로 DB 종류를 묻는다.
+fn resolve_db_type(override_val: Option<DbType>) -> Result<DbType, AppError> {
+    if let Some(db) = override_val {
+        return Ok(db);
+    }
+    let input = prompt_and_read("DB Type (mysql/postgres, default: mysql) : ")?;
+    if input.is_empty() {
+        Ok(DbType::MySql)
+    } else {
+        DbType::from_str(&input)
+    }
+}
+
 /// 대화식으로 사용자 입력을 받아 RunConfig를 생성합니다.
-pub fn load_config(output_format: OutputFormat) -> Result<RunConfig, AppError> {
-    // 1. Endpoint
-    let endpoint = prompt_and_read("Endpoint : ")?;
-    if endpoint.is_empty() {
-        return Err(AppError::MissingInput("Endpoint".to_string()));
-    }
+/// CLI 플래그로 지정된 값은 그대로 사용하고, 지정되지 않은 값만 대화형으로 묻습니다.
+pub fn load_config(overrides: CliOverrides) -> Result<RunConfig, AppError> {
+    // 1. 출력 포맷
+    let output_format = resolve_output_format(overrides.output_format)?;
 
-    // 2. Port (기본값: 3306)
-    let port_str = prompt_and_read("Port (default: 3306) : ")?;
-    let port = parse_port(&port_str)?;
+    // 2. DB 종류 (포트 기본값 결정에 필요하므로 먼저 확정)
+    let db_type = resolve_db_type(overrides.db_type)?;
 
-    // 3. User
-    let user = prompt_and_read("User : ")?;
-    if user.is_empty() {
-        return Err(AppError::MissingInput("User".to_string()));
-    }
+    // 3. Endpoint
+    let endpoint = match overrides.endpoint {
+        Some(v) if !v.is_empty() => v,
+        _ => {
+            let v = prompt_and_read("Endpoint : ")?;
+            if v.is_empty() {
+                return Err(AppError::MissingInput("Endpoint".to_string()));
+            }
+            v
+        }
+    };
 
-    // 4. Password (에코 없이 읽기)
+    // 4. Port (DB 종류별 기본값 사용)
+    let default_port = db_type.default_port();
+    let port = match overrides.port {
+        Some(p) => p,
+        None => {
+            let port_str = prompt_and_read(&format!("Port (default: {}) : ", default_port))?;
+            parse_port_with_default(&port_str, default_port)?
+        }
+    };
+
+    // 5. User
+    let user = match overrides.user {
+        Some(v) if !v.is_empty() => v,
+        _ => {
+            let v = prompt_and_read("User : ")?;
+            if v.is_empty() {
+                return Err(AppError::MissingInput("User".to_string()));
+            }
+            v
+        }
+    };
+
+    // 6. Password (에코 없이 읽기 - CLI 오버라이드 없음: 보안상 항상 프롬프트)
     print!("Password : ");
     io::stdout()
         .flush()
         .map_err(|e| AppError::InputRead { source: e })?;
     let password = rpassword::read_password().map_err(|e| AppError::InputRead { source: e })?;
 
-    // 5. DB (쉼표 구분, 빈 입력 시 None)
-    let db_str = prompt_and_read("DB(Seperator , or Space(All)) : ")?;
-    let target_db = parse_comma_separated(&db_str);
+    // 7. Database (PostgreSQL 전용 필수 입력)
+    let database = match db_type {
+        DbType::Postgres => {
+            let v = match overrides.database {
+                Some(v) if !v.is_empty() => v,
+                _ => {
+                    let v = prompt_and_read("Database : ")?;
+                    if v.is_empty() {
+                        return Err(AppError::MissingInput("Database".to_string()));
+                    }
+                    v
+                }
+            };
+            Some(v)
+        }
+        DbType::MySql => None,
+    };
 
-    // 6. Exception Tables (쉼표 구분, 빈 입력 시 None)
-    let except_str =
-        prompt_and_read("Exception Tables(Seperator , or Space(none) / Use wildcard) : ")?;
-    let except_tables = parse_comma_separated(&except_str);
+    // 8. DB (쉼표 구분, 빈 입력 시 None)
+    let target_db = match overrides.target_db {
+        Some(v) => Some(v),
+        None => {
+            let db_str = prompt_and_read("DB(Seperator , or Space(All)) : ")?;
+            parse_comma_separated(&db_str)
+        }
+    };
+
+    // 9. Exception Tables (쉼표 구분, 빈 입력 시 None)
+    let except_tables = match overrides.except_tables {
+        Some(v) => Some(v),
+        None => {
+            let except_str =
+                prompt_and_read("Exception Tables(Seperator , or Space(none) / Use wildcard) : ")?;
+            parse_comma_separated(&except_str)
+        }
+    };
 
     Ok(RunConfig {
         endpoint,
@@ -90,6 +191,8 @@ pub fn load_config(output_format: OutputFormat) -> Result<RunConfig, AppError> {
         target_db,
         except_tables,
         output_format,
+        db_type,
+        database,
     })
 }
 
@@ -101,6 +204,17 @@ mod tests {
     #[test]
     fn parse_port_empty_returns_default_3306() {
         assert_eq!(parse_port("").unwrap(), 3306);
+    }
+
+    #[test]
+    fn parse_port_with_default_empty_returns_custom_default() {
+        assert_eq!(parse_port_with_default("", 5432).unwrap(), 5432);
+        assert_eq!(parse_port_with_default("", 3306).unwrap(), 3306);
+    }
+
+    #[test]
+    fn parse_port_with_default_valid_number_ignores_default() {
+        assert_eq!(parse_port_with_default("8080", 5432).unwrap(), 8080);
     }
 
     #[test]
@@ -189,6 +303,13 @@ mod tests {
             _dummy in 0u8..=255u8,
         ) {
             prop_assert_eq!(parse_port("").unwrap(), 3306);
+        }
+
+        #[test]
+        fn port_parse_with_default_empty_returns_default(
+            default in 1u16..=65535u16,
+        ) {
+            prop_assert_eq!(parse_port_with_default("", default).unwrap(), default);
         }
 
         #[test]
