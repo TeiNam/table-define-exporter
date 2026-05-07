@@ -1,0 +1,15 @@
+{
+  "name": "Pre-Shell Safety Check",
+  "version": "1.0.0",
+  "description": "Pre-Shell Safety Check",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": [
+      "shell"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Before this shell command, check:\n1. DESTRUCTIVE — Does it delete files (rm -rf), drop databases, or modify production resources? If yes, BLOCK and ask for confirmation.\n2. LONG-RUNNING — Is it a dev server, watch mode, or interactive command that won't terminate? If yes, BLOCK and suggest using background process or manual execution.\n3. SIDE EFFECTS — Does it install global packages, modify system config, or push to remote? If yes, warn the user.\nOnly report issues found. If all checks pass, proceed silently."
+  }
+}

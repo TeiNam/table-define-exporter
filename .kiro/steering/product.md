@@ -9,15 +9,15 @@
 - **Never run code directly via terminal**
 - **Never use `cat <<EOF` to create files** — use fsWrite or fsAppend tools instead
 - **Never pipe long text through terminal commands** — use fsWrite or fsAppend tools instead
-- Never commit commented-out code, console.log, or print statements
+- Never commit commented-out code or `println!` debug statements
 - Comment only non-obvious code
 
 ## Automation
-- Formatting (Black, Prettier), linting (Pylint, ESLint)
-- Tests (on every push), deploy (one-click), backups (scheduled)
+- Formatting (`cargo fmt`), linting (`cargo clippy`)
+- Tests (`cargo test` on every push)
+- `cargo audit` for dependency vulnerabilities
 
 ## Acceptable Rule Relaxation
 - Prototyping: skip tests OK
-- Debugging: temporary print OK
+- Debugging: temporary `dbg!()` OK
 - Exploring patterns: copy-paste OK
-

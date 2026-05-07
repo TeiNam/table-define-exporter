@@ -1,43 +1,22 @@
-# Performance Guidelines
+# Performance Optimization Rules
 
-## Algorithm & Data Structure
+## Optimize Only When Needed
 
-- Choose appropriate data structures for access patterns (hash map for lookups, sorted set for range queries)
-- Avoid O(n²) operations on collections that may grow — prefer indexed access or batch processing
-- Use streaming/generators for large datasets instead of loading everything into memory
-- Pre-compute and cache expensive calculations when inputs change infrequently
+- 벤치마크 없이 최적화하지 않음
+- `cargo bench` 또는 `criterion`으로 측정 후 최적화
+- 불필요한 할당(allocation) 줄이기
+- 핫 패스에서 `String` 대신 `&str` 활용
 
-## Database & Query Optimization
+## Build Troubleshooting
 
-- Avoid N+1 queries — use eager loading, joins, or batch fetches
-- Add indexes for columns used in WHERE, JOIN, and ORDER BY clauses
-- Use pagination (cursor-based for large datasets, offset for small ones)
-- Monitor and log slow queries; set query timeout limits
+빌드 실패 시:
+1. 에러 메시지 분석
+2. 점진적으로 수정
+3. 각 수정 후 검증 (`cargo check` → `cargo build`)
 
-## Caching Strategy
+## Approach for Complex Tasks
 
-- Cache at the right layer: application cache for computed results, CDN for static assets, query cache for repeated DB reads
-- Always define cache invalidation strategy before adding cache
-- Use TTL-based expiration as a safety net even with active invalidation
-
-## Network & I/O
-
-- Parallelize independent I/O operations (concurrent API calls, batch DB operations)
-- Set timeouts on all external calls — never wait indefinitely
-- Use connection pooling for databases and HTTP clients
-- Compress large payloads (gzip/brotli for HTTP, binary formats for internal services)
-
-## Frontend Performance
-
-- Lazy-load routes, images, and heavy components
-- Minimize bundle size — tree-shake unused code, split chunks by route
-- Avoid layout thrashing — batch DOM reads before writes
-- Target Core Web Vitals: LCP < 2.5s, FID < 100ms, CLS < 0.1
-
-## Profiling & Measurement
-
-- Profile before optimizing — measure actual bottlenecks, don't guess
-- Set performance budgets (bundle size, API response time, memory usage)
-- Use language-native profiling tools (Chrome DevTools, cProfile, pprof, perf)
-- Monitor production performance, not just dev environment
-
+복잡한 작업에 깊은 사고가 필요할 때:
+1. 구조화된 접근 방식 사용
+2. 여러 비평 라운드를 통한 철저한 분석
+3. 다양한 관점에서 검토
