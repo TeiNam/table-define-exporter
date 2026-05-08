@@ -201,7 +201,7 @@ cargo llvm-cov --all-features
 
 - Markdown VIEW 코드블록: 이전 한 줄 `` ```{sql}``` `` 형태 → 표준 fenced 코드블록으로 수정 (GitHub/IDE 뷰어에서 SQL 하이라이트 정상 동작)
 
-의도적 오타(`Referance`)는 Go 버전과의 호환을 위해 유지됩니다.
+의도적 오타(`Referance`)는 `Reference`로 수정되었습니다. 기존 Go 버전 출력물과 이 필드 라벨이 다릅니다.
 
 ## 라이선스
 

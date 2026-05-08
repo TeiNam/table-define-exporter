@@ -185,7 +185,7 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
                 }
             }
 
-            // 제약 조건 섹션 (오타 Referance 유지 - Go 버전 호환)
+            // 제약 조건 섹션 (Reference 라벨 사용 — 의도적 오타 수정 반영)
             if !t.constraints.is_empty() {
                 ws.merge_range(row, 0, row, 9, "Constraint", &title_fmt)?;
                 row += 1;
@@ -193,7 +193,7 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
                 // 제약 헤더
                 ws.merge_range(row, 0, row, 2, "Constraint Name", &title_fmt)?;
                 ws.write_with_format(row, 3, "Column", &title_fmt)?;
-                ws.merge_range(row, 4, row, 7, "Referance", &title_fmt)?;
+                ws.merge_range(row, 4, row, 7, "Reference", &title_fmt)?;
                 ws.write_with_format(row, 8, "ON DELETE", &title_fmt)?;
                 ws.write_with_format(row, 9, "ON UPDATE", &title_fmt)?;
                 row += 1;

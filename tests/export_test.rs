@@ -245,7 +245,7 @@ fn write_markdown_to_buf(
                 for con in &t.constraints {
                     writeln!(
                         buf,
-                        "- {} FOREIGN KEY ({}) Referance {} ON DELETE {} ON UPDATE {}",
+                        "- {} FOREIGN KEY ({}) Reference {} ON DELETE {} ON UPDATE {}",
                         con.constraint_name,
                         con.constraint_column,
                         con.reference,
@@ -758,7 +758,7 @@ fn base_table_bytes_unchanged_after_view_fence_fix() {
 
     let actual = generate_markdown("fixtures", &[table]);
 
-    // 기대 출력: 기존 BASE TABLE 렌더러 포맷을 그대로 고정 (오타 "Referance" 유지).
+    // 기대 출력: 기존 BASE TABLE 렌더러 포맷을 그대로 고정 ("Reference" 라벨 사용).
     // concat!으로 각 줄을 독립 리터럴로 이어 붙여 의도한 선행 공백을 보존한다.
     // 컬럼 표는 9개 필드 → 파이프 10개.
     let expected = concat!(
@@ -783,7 +783,7 @@ fn base_table_bytes_unchanged_after_view_fence_fix() {
         "- [Normal]idx_id(id)\n",
         "\n",
         "**Constraint**\n",
-        "- fk_user FOREIGN KEY (user_id) Referance users.id ON DELETE CASCADE ON UPDATE CASCADE\n",
+        "- fk_user FOREIGN KEY (user_id) Reference users.id ON DELETE CASCADE ON UPDATE CASCADE\n",
         "\n",
         " \n",
     );

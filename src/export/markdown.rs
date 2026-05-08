@@ -151,13 +151,13 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                 writeln!(file)?;
             }
 
-            // 제약 조건 섹션 (오타 Referance 유지 - Go Excel 버전 호환)
+            // 제약 조건 섹션 (Reference 라벨 사용 — 의도적 오타 수정 반영)
             if !t.constraints.is_empty() {
                 writeln!(file, "**Constraint**")?;
                 for con in &t.constraints {
                     writeln!(
                         file,
-                        "- {} FOREIGN KEY ({}) Referance {} ON DELETE {} ON UPDATE {}",
+                        "- {} FOREIGN KEY ({}) Reference {} ON DELETE {} ON UPDATE {}",
                         con.constraint_name,
                         con.constraint_column,
                         con.reference,
