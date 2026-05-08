@@ -380,7 +380,10 @@ mod tests {
             parse_output_format_choice("markdown").unwrap(),
             OutputFormat::Markdown
         );
-        assert_eq!(parse_output_format_choice("sql").unwrap(), OutputFormat::Sql);
+        assert_eq!(
+            parse_output_format_choice("sql").unwrap(),
+            OutputFormat::Sql
+        );
     }
 
     #[test]
