@@ -1,7 +1,8 @@
 use proptest::prelude::*;
 use td_export::db::postgres::{
     build_pg_column_type, build_pg_ddl_from_metadata, determine_pg_extra, filter_pg_schemas,
-    is_pg_system_schema, parse_pg_indexdef, PgConstraintType, PgDdlColumn, PgDdlConstraint,
+    is_pg_system_schema, parse_pg_indexdef, ParsedIndex, PgConstraintType, PgDdlColumn,
+    PgDdlConstraint,
 };
 use td_export::model::{ColumnInfo, GeneralInfo, TableDef, ViewInfo};
 
@@ -882,84 +883,147 @@ proptest! {
 #[test]
 fn parse_indexdef_btree_single_column() {
     let indexdef = "CREATE INDEX idx_users_name ON public.users USING btree (name)";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(!is_unique);
-    assert_eq!(columns, "name");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "name");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_unique_multi_columns() {
     let indexdef =
         "CREATE UNIQUE INDEX idx_users_email ON public.users USING btree (email, tenant_id)";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(is_unique);
-    assert_eq!(columns, "email, tenant_id");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(parsed.is_unique);
+    assert_eq!(parsed.columns, "email, tenant_id");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_hash_index() {
     let indexdef = "CREATE INDEX idx_lookup ON myschema.orders USING hash (order_id)";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(!is_unique);
-    assert_eq!(columns, "order_id");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "order_id");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_with_desc_modifier() {
     let indexdef = "CREATE INDEX idx_created ON public.events USING btree (created_at DESC)";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(!is_unique);
-    assert_eq!(columns, "created_at");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "created_at");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_with_asc_modifier() {
     let indexdef = "CREATE INDEX idx_score ON public.results USING btree (score ASC)";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(!is_unique);
-    assert_eq!(columns, "score");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "score");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_with_nulls_first_last() {
     let indexdef =
         "CREATE INDEX idx_priority ON public.tasks USING btree (priority DESC NULLS LAST)";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(!is_unique);
-    assert_eq!(columns, "priority");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "priority");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_multi_columns_with_modifiers() {
     let indexdef = "CREATE UNIQUE INDEX idx_composite ON public.items \
                     USING btree (category ASC, created_at DESC NULLS FIRST)";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(is_unique);
-    assert_eq!(columns, "category, created_at");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(parsed.is_unique);
+    assert_eq!(parsed.columns, "category, created_at");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_expression_index() {
     // 표현식 인덱스: lower(name) 같은 함수 호출이 포함된 경우
     let indexdef = "CREATE INDEX idx_lower_name ON public.users USING btree (lower(name))";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(!is_unique);
-    assert_eq!(columns, "lower(name)");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "lower(name)");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_gin_index() {
     let indexdef = "CREATE INDEX idx_tags ON public.articles USING gin (tags)";
-    let (is_unique, columns) = parse_pg_indexdef(indexdef);
-    assert!(!is_unique);
-    assert_eq!(columns, "tags");
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "tags");
+    assert!(parsed.predicate.is_none());
 }
 
 #[test]
 fn parse_indexdef_empty_string() {
-    let (is_unique, columns) = parse_pg_indexdef("");
-    assert!(!is_unique);
-    assert_eq!(columns, "");
+    let parsed = parse_pg_indexdef("");
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "");
+    assert!(parsed.predicate.is_none());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 단위 테스트: parse_pg_indexdef — 파셜 인덱스 WHERE 절 추출 (Task 10.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn parse_indexdef_partial_simple_predicate() {
+    // 파셜 인덱스: WHERE 절 본문이 그대로 predicate에 들어가야 한다
+    let indexdef =
+        "CREATE INDEX idx_active ON public.users USING btree (email) WHERE (active = true)";
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(!parsed.is_unique);
+    assert_eq!(parsed.columns, "email");
+    assert_eq!(parsed.predicate.as_deref(), Some("(active = true)"));
+}
+
+#[test]
+fn parse_indexdef_partial_unique_with_predicate() {
+    // UNIQUE + 파셜 인덱스 조합
+    let indexdef = "CREATE UNIQUE INDEX idx_email_live ON public.users \
+                    USING btree (email) WHERE (deleted_at IS NULL)";
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(parsed.is_unique);
+    assert_eq!(parsed.columns, "email");
+    assert_eq!(parsed.predicate.as_deref(), Some("(deleted_at IS NULL)"));
+}
+
+#[test]
+fn parse_indexdef_partial_case_insensitive_where() {
+    // WHERE 키워드는 대소문자 무관 (PostgreSQL 표기 호환)
+    let indexdef = "CREATE INDEX idx_low ON t USING btree (col) where score > 0";
+    let parsed = parse_pg_indexdef(indexdef);
+    assert_eq!(parsed.predicate.as_deref(), Some("score > 0"));
+}
+
+#[test]
+fn parse_indexdef_no_where_clause_returns_none() {
+    let indexdef = "CREATE INDEX idx ON t USING btree (col)";
+    let parsed = parse_pg_indexdef(indexdef);
+    assert!(parsed.predicate.is_none());
+}
+
+#[test]
+fn parsed_index_struct_equality() {
+    // ParsedIndex 값 기반 동등성 비교 (PartialEq 파생 검증)
+    let a = parse_pg_indexdef("CREATE INDEX i ON t USING btree (c)");
+    let b = ParsedIndex {
+        is_unique: false,
+        columns: "c".to_string(),
+        predicate: None,
+    };
+    assert_eq!(a, b);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1176,6 +1240,90 @@ fn ddl_with_foreign_key() {
     assert!(ddl.contains("REFERENCES \"public\".\"users\" (\"id\")"));
     assert!(ddl.contains("ON DELETE CASCADE"));
     assert!(ddl.contains("ON UPDATE NO ACTION"));
+}
+
+#[test]
+fn ddl_with_multiple_fks_reference_names_resolved() {
+    // 2개의 FK를 가진 orders 테이블에서 FK 일괄 수집 결과가
+    // DDL 출력에 모두 정확하게 포함되는지 검증한다.
+    // - orders_user_fk: user_id → public.users(id) ON DELETE CASCADE
+    // - orders_product_fk: product_id → public.products(id) ON DELETE SET NULL
+    let columns = vec![
+        PgDdlColumn {
+            name: "id".to_string(),
+            data_type: "integer".to_string(),
+            is_nullable: false,
+            default_value: None,
+            generated_expression: None,
+        },
+        PgDdlColumn {
+            name: "user_id".to_string(),
+            data_type: "integer".to_string(),
+            is_nullable: false,
+            default_value: None,
+            generated_expression: None,
+        },
+        PgDdlColumn {
+            name: "product_id".to_string(),
+            data_type: "integer".to_string(),
+            is_nullable: true,
+            default_value: None,
+            generated_expression: None,
+        },
+    ];
+    let constraints = vec![
+        PgDdlConstraint {
+            name: "orders_user_fk".to_string(),
+            constraint_type: PgConstraintType::ForeignKey {
+                ref_schema: "public".to_string(),
+                ref_table: "users".to_string(),
+                ref_columns: vec!["id".to_string()],
+                on_delete: "CASCADE".to_string(),
+                on_update: "NO ACTION".to_string(),
+            },
+            columns: vec!["user_id".to_string()],
+        },
+        PgDdlConstraint {
+            name: "orders_product_fk".to_string(),
+            constraint_type: PgConstraintType::ForeignKey {
+                ref_schema: "public".to_string(),
+                ref_table: "products".to_string(),
+                ref_columns: vec!["id".to_string()],
+                on_delete: "SET NULL".to_string(),
+                on_update: "NO ACTION".to_string(),
+            },
+            columns: vec!["product_id".to_string()],
+        },
+    ];
+    let ddl = build_pg_ddl_from_metadata("public", "orders", &columns, &constraints, &[]).unwrap();
+
+    // 첫 번째 FK: user_id → public.users(id) ON DELETE CASCADE
+    assert!(
+        ddl.contains(
+            "CONSTRAINT \"orders_user_fk\" FOREIGN KEY (\"user_id\") \
+             REFERENCES \"public\".\"users\" (\"id\") ON DELETE CASCADE"
+        ),
+        "첫 번째 FK가 올바른 형식으로 포함되어야 함: {ddl}"
+    );
+
+    // 두 번째 FK: product_id → public.products(id) ON DELETE SET NULL
+    assert!(
+        ddl.contains(
+            "CONSTRAINT \"orders_product_fk\" FOREIGN KEY (\"product_id\") \
+             REFERENCES \"public\".\"products\" (\"id\") ON DELETE SET NULL"
+        ),
+        "두 번째 FK가 올바른 형식으로 포함되어야 함: {ddl}"
+    );
+
+    // FK 일괄 수집이 두 개의 FK 정보를 모두 보존했는지 확인
+    // (참조 테이블 이름이 각각 올바르게 해석되었는지까지 포함)
+    assert_eq!(
+        ddl.matches("FOREIGN KEY").count(),
+        2,
+        "FK는 정확히 2개여야 함: {ddl}"
+    );
+    assert!(ddl.contains("\"public\".\"users\""));
+    assert!(ddl.contains("\"public\".\"products\""));
 }
 
 #[test]

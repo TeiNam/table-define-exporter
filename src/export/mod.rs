@@ -27,3 +27,7 @@ pub fn create_exporter(format: OutputFormat) -> Box<dyn Exporter> {
 pub mod excel;
 pub mod markdown;
 pub mod sql;
+
+// Property 5(Terminator 단일 세미콜론 종결) 테스트를 위한 공개 진입점 재노출.
+// `Terminator` enum 자체는 캡슐화 유지.
+pub use sql::apply_sql_terminator;

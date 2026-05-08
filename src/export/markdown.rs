@@ -1,3 +1,4 @@
+use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -131,11 +132,21 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
             if !t.indexes.is_empty() {
                 writeln!(file, "**Index**")?;
                 for idx in &t.indexes {
-                    if idx.non_unique == 1 {
-                        writeln!(file, "- [Normal]{}({})", idx.index_name, idx.index_columns)?;
+                    let idx_type = if idx.non_unique == 1 {
+                        "Normal"
                     } else {
-                        writeln!(file, "- [Unique]{}({})", idx.index_name, idx.index_columns)?;
+                        "Unique"
+                    };
+                    write!(
+                        file,
+                        "- [{}]{}({})",
+                        idx_type, idx.index_name, idx.index_columns
+                    )?;
+                    // 파셜 인덱스(partial index): predicate가 존재하면 " WHERE <predicate>" 추가
+                    if let Some(pred) = &idx.predicate {
+                        write!(file, " WHERE {}", pred)?;
                     }
+                    writeln!(file)?;
                 }
                 writeln!(file)?;
             }
@@ -174,7 +185,7 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
             // View Create SQL 섹션
             writeln!(file, "**View Create SQL**")?;
             if let Some(view) = &t.view {
-                writeln!(file, "\n```{}```", view.view_query)?;
+                write_view_fenced_sql(file, &view.view_query)?;
             }
         }
 
@@ -182,4 +193,79 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
     }
 
     Ok(())
+}
+
+/// VIEW의 SQL 본문을 언어 태그가 붙은 fenced code block으로 기록한다.
+///
+/// Requirements 3.1/3.2/3.3 준수:
+/// - 빈 줄 → 열기 펜스 라인(```sql) → SQL 본문 → 닫기 펜스 라인을 각각 별도 줄로 출력
+/// - 한 줄 안에 언어 태그와 본문을 함께 배치하지 않는다
+/// - 본문에 포함된 최장 연속 백틱 길이가 `m`일 때 펜스 길이는 `max(3, m + 1)`
+fn write_view_fenced_sql(file: &mut File, sql: &str) -> std::io::Result<()> {
+    let fence_len = max(3, longest_backtick_run(sql) + 1);
+    let fence: String = "`".repeat(fence_len);
+
+    // 이전 섹션과 분리되는 빈 줄
+    writeln!(file)?;
+    // 열기 펜스 + 언어 태그
+    writeln!(file, "{fence}sql")?;
+    // SQL 본문 — 말미 개행 보장
+    if sql.ends_with('\n') {
+        file.write_all(sql.as_bytes())?;
+    } else {
+        file.write_all(sql.as_bytes())?;
+        writeln!(file)?;
+    }
+    // 닫기 펜스
+    writeln!(file, "{fence}")?;
+    Ok(())
+}
+
+/// 문자열 내 최장 연속 백틱(`) 길이를 반환한다.
+fn longest_backtick_run(s: &str) -> usize {
+    let mut max_run = 0usize;
+    let mut cur = 0usize;
+    for ch in s.chars() {
+        if ch == '`' {
+            cur += 1;
+            if cur > max_run {
+                max_run = cur;
+            }
+        } else {
+            cur = 0;
+        }
+    }
+    max_run
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn longest_backtick_run_empty() {
+        assert_eq!(longest_backtick_run(""), 0);
+    }
+
+    #[test]
+    fn longest_backtick_run_no_backticks() {
+        assert_eq!(longest_backtick_run("SELECT 1 FROM t"), 0);
+    }
+
+    #[test]
+    fn longest_backtick_run_single() {
+        assert_eq!(longest_backtick_run("`a`"), 1);
+    }
+
+    #[test]
+    fn longest_backtick_run_picks_max() {
+        // 1개, 그 다음 3개, 그 다음 2개 → 3
+        assert_eq!(longest_backtick_run("`a```b``c"), 3);
+    }
+
+    #[test]
+    fn longest_backtick_run_resets_on_non_backtick() {
+        // 2개 + x + 4개 → 4
+        assert_eq!(longest_backtick_run("``x````"), 4);
+    }
 }

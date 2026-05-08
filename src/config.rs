@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 use crate::{
     error::AppError,
     model::{DbType, OutputFormat, RunConfig},
+    secret::Password,
 };
 
 /// CLI에서 전달된 선택적 오버라이드 값.
@@ -61,12 +62,47 @@ pub(crate) fn parse_port(input: &str) -> Result<u16, AppError> {
 
 /// 쉼표 구분 문자열을 파싱합니다.
 /// - 빈 문자열(공백 포함) → None
-/// - 그 외 → 쉼표로 분리 후 각 항목 trim → Some(Vec<String>)
-pub(crate) fn parse_comma_separated(input: &str) -> Option<Vec<String>> {
-    if input.trim().is_empty() {
+/// - 쉼표만 있는 입력(`","`, `",,,"`)이나 각 항목이 모두 공백인 경우 → None (Req 12.3)
+/// - 그 외 → 쉼표로 분리 후 각 항목 trim, 빈 원소 제거 → Some(Vec<String>)
+///
+/// # Note
+/// 본 함수는 통합 테스트(`tests/config_test.rs`)에서 Property 12 속성 검증을
+/// 목적으로 호출되므로 `pub`으로 공개한다. 내부 구현 변경 시 테스트 회귀를
+/// 의식적으로 확인해야 한다.
+pub fn parse_comma_separated(input: &str) -> Option<Vec<String>> {
+    let items: Vec<String> = input
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if items.is_empty() {
         None
     } else {
-        Some(input.split(',').map(|s| s.trim().to_string()).collect())
+        Some(items)
+    }
+}
+
+/// 숫자 또는 이름 입력을 `OutputFormat`으로 변환한다.
+///
+/// 숫자 선택(`1`, `2`, `3`)과 기존 이름(`excel`, `markdown`, `sql`) 입력을 모두 허용하여
+/// 대화형 UX를 개선하면서도 하위 호환을 유지한다.
+fn parse_output_format_choice(input: &str) -> Result<OutputFormat, AppError> {
+    match input {
+        "1" => Ok(OutputFormat::Excel),
+        "2" => Ok(OutputFormat::Markdown),
+        "3" => Ok(OutputFormat::Sql),
+        _ => input.parse::<OutputFormat>(),
+    }
+}
+
+/// 숫자 또는 이름 입력을 `DbType`으로 변환한다.
+///
+/// 숫자 선택(`1`, `2`)과 기존 이름(`mysql`, `postgres`) 입력을 모두 허용한다.
+fn parse_db_type_choice(input: &str) -> Result<DbType, AppError> {
+    match input {
+        "1" => Ok(DbType::MySql),
+        "2" => Ok(DbType::Postgres),
+        _ => input.parse::<DbType>(),
     }
 }
 
@@ -75,11 +111,15 @@ fn resolve_output_format(override_val: Option<OutputFormat>) -> Result<OutputFor
     if let Some(fmt) = override_val {
         return Ok(fmt);
     }
-    let input = prompt_and_read("Output Format (excel/markdown/sql, default: markdown) : ")?;
+    println!("Output Format:");
+    println!("  1) excel");
+    println!("  2) markdown (default)");
+    println!("  3) sql");
+    let input = prompt_and_read("Choice : ")?;
     if input.is_empty() {
         Ok(OutputFormat::Markdown)
     } else {
-        OutputFormat::from_str(&input)
+        parse_output_format_choice(&input)
     }
 }
 
@@ -88,11 +128,14 @@ fn resolve_db_type(override_val: Option<DbType>) -> Result<DbType, AppError> {
     if let Some(db) = override_val {
         return Ok(db);
     }
-    let input = prompt_and_read("DB Type (mysql/postgres, default: mysql) : ")?;
+    println!("DB Type:");
+    println!("  1) mysql (default)");
+    println!("  2) postgres");
+    let input = prompt_and_read("Choice : ")?;
     if input.is_empty() {
         Ok(DbType::MySql)
     } else {
-        DbType::from_str(&input)
+        parse_db_type_choice(&input)
     }
 }
 
@@ -144,7 +187,8 @@ pub fn load_config(overrides: CliOverrides) -> Result<RunConfig, AppError> {
     io::stdout()
         .flush()
         .map_err(|e| AppError::InputRead { source: e })?;
-    let password = rpassword::read_password().map_err(|e| AppError::InputRead { source: e })?;
+    let password_raw = rpassword::read_password().map_err(|e| AppError::InputRead { source: e })?;
+    let password = Password::new(password_raw);
 
     // 7. Database (PostgreSQL 전용 필수 입력)
     let database = match db_type {
@@ -165,7 +209,9 @@ pub fn load_config(overrides: CliOverrides) -> Result<RunConfig, AppError> {
     };
 
     // 8. DB (쉼표 구분, 빈 입력 시 None)
-    let target_db = match overrides.target_db {
+    //    CLI 오버라이드가 빈 Vec이면 None(전체 선택)으로 정규화하여
+    //    실수로 모든 스키마가 필터아웃되는 것을 방지한다. (Req 12.1)
+    let target_db = match overrides.target_db.filter(|v| !v.is_empty()) {
         Some(v) => Some(v),
         None => {
             let db_str = prompt_and_read("DB(Seperator , or Space(All)) : ")?;
@@ -174,7 +220,8 @@ pub fn load_config(overrides: CliOverrides) -> Result<RunConfig, AppError> {
     };
 
     // 9. Exception Tables (쉼표 구분, 빈 입력 시 None)
-    let except_tables = match overrides.except_tables {
+    //    CLI 오버라이드가 빈 Vec이면 None으로 정규화한다. (Req 12.2)
+    let except_tables = match overrides.except_tables.filter(|v| !v.is_empty()) {
         Some(v) => Some(v),
         None => {
             let except_str =
@@ -281,6 +328,86 @@ mod tests {
     fn parse_comma_separated_wildcard_pattern_preserved() {
         let result = parse_comma_separated("tmp_*,test_%").unwrap();
         assert_eq!(result, vec!["tmp_*", "test_%"]);
+    }
+
+    #[test]
+    fn parse_comma_separated_only_commas_returns_none() {
+        // 쉼표만 있는 입력은 빈 원소만 남으므로 None을 반환해야 함 (Req 12.3)
+        assert!(parse_comma_separated(",").is_none());
+        assert!(parse_comma_separated(",,,").is_none());
+    }
+
+    #[test]
+    fn parse_comma_separated_commas_with_spaces_returns_none() {
+        // 쉼표와 공백만 있는 입력도 모두 빈 원소로 정리되어 None (Req 12.3)
+        assert!(parse_comma_separated(" , , ").is_none());
+        assert!(parse_comma_separated(",  ,").is_none());
+    }
+
+    #[test]
+    fn parse_comma_separated_mixed_empty_elements_filtered() {
+        // 빈 원소는 제거되고 유효한 원소만 남아야 함 (Req 12.3)
+        let result = parse_comma_separated("db1,,db2,").unwrap();
+        assert_eq!(result, vec!["db1", "db2"]);
+
+        let result = parse_comma_separated(",db1, ,db2").unwrap();
+        assert_eq!(result, vec!["db1", "db2"]);
+    }
+
+    // ── 숫자 선택 기반 대화형 입력 파서 ───────────────────────────────────────
+
+    #[test]
+    fn output_format_choice_by_number() {
+        assert_eq!(
+            parse_output_format_choice("1").unwrap(),
+            OutputFormat::Excel
+        );
+        assert_eq!(
+            parse_output_format_choice("2").unwrap(),
+            OutputFormat::Markdown
+        );
+        assert_eq!(parse_output_format_choice("3").unwrap(), OutputFormat::Sql);
+    }
+
+    #[test]
+    fn output_format_choice_by_name_still_works() {
+        // 하위 호환: 기존 이름 입력도 계속 허용한다
+        assert_eq!(
+            parse_output_format_choice("excel").unwrap(),
+            OutputFormat::Excel
+        );
+        assert_eq!(
+            parse_output_format_choice("markdown").unwrap(),
+            OutputFormat::Markdown
+        );
+        assert_eq!(parse_output_format_choice("sql").unwrap(), OutputFormat::Sql);
+    }
+
+    #[test]
+    fn output_format_choice_invalid_returns_error() {
+        assert!(parse_output_format_choice("0").is_err());
+        assert!(parse_output_format_choice("4").is_err());
+        assert!(parse_output_format_choice("xlsx").is_err());
+    }
+
+    #[test]
+    fn db_type_choice_by_number() {
+        assert_eq!(parse_db_type_choice("1").unwrap(), DbType::MySql);
+        assert_eq!(parse_db_type_choice("2").unwrap(), DbType::Postgres);
+    }
+
+    #[test]
+    fn db_type_choice_by_name_still_works() {
+        // 하위 호환: 기존 이름 입력도 계속 허용한다
+        assert_eq!(parse_db_type_choice("mysql").unwrap(), DbType::MySql);
+        assert_eq!(parse_db_type_choice("postgres").unwrap(), DbType::Postgres);
+    }
+
+    #[test]
+    fn db_type_choice_invalid_returns_error() {
+        assert!(parse_db_type_choice("0").is_err());
+        assert!(parse_db_type_choice("3").is_err());
+        assert!(parse_db_type_choice("mongo").is_err());
     }
 
     proptest! {

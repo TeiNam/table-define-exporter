@@ -174,7 +174,13 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
                     };
                     ws.merge_range(row, 0, row, 1, idx_type, &Format::new())?;
                     ws.merge_range(row, 2, row, 5, idx.index_name.as_str(), &Format::new())?;
-                    ws.merge_range(row, 6, row, 9, idx.index_columns.as_str(), &Format::new())?;
+                    // 파셜 인덱스(partial index): predicate가 존재하면 컬럼 뒤에 " WHERE <predicate>" 추가
+                    let columns_cell = if let Some(pred) = &idx.predicate {
+                        format!("{} WHERE {}", idx.index_columns, pred)
+                    } else {
+                        idx.index_columns.clone()
+                    };
+                    ws.merge_range(row, 6, row, 9, columns_cell.as_str(), &Format::new())?;
                     row += 1;
                 }
             }

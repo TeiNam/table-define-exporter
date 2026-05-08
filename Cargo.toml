@@ -17,6 +17,7 @@ clap = { version = "4", features = ["derive"] }
 sqlx = { version = "0.8", features = ["mysql", "postgres", "runtime-tokio", "macros"] }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures = "0.3"
 rust_xlsxwriter = "0.80"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -27,3 +28,7 @@ rpassword = "6"
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
+# Property 7 (`tests/concurrency_test.rs`)은 `tokio::time::sleep`로 원소별
+# 지연을 주어 병렬 수집의 순서 보존을 검증한다. 기본 `tokio` 의존성에 없는
+# `time` feature만 테스트 빌드에서 추가로 요구한다.
+tokio = { version = "1", features = ["time"] }

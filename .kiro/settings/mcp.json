@@ -8,7 +8,8 @@
       ],
       "description": "Token optimization for 95%+ context reduction",
       "autoApprove": [
-        "smart_status"
+        "smart_status",
+        "smart_edit"
       ]
     }
   }

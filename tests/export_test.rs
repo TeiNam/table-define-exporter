@@ -222,11 +222,20 @@ fn write_markdown_to_buf(
             if !t.indexes.is_empty() {
                 writeln!(buf, "**Index**")?;
                 for idx in &t.indexes {
-                    if idx.non_unique == 1 {
-                        writeln!(buf, "- [Normal]{}({})", idx.index_name, idx.index_columns)?;
+                    let idx_type = if idx.non_unique == 1 {
+                        "Normal"
                     } else {
-                        writeln!(buf, "- [Unique]{}({})", idx.index_name, idx.index_columns)?;
+                        "Unique"
+                    };
+                    write!(
+                        buf,
+                        "- [{}]{}({})",
+                        idx_type, idx.index_name, idx.index_columns
+                    )?;
+                    if let Some(pred) = &idx.predicate {
+                        write!(buf, " WHERE {}", pred)?;
                     }
+                    writeln!(buf)?;
                 }
                 writeln!(buf)?;
             }
@@ -259,7 +268,31 @@ fn write_markdown_to_buf(
             writeln!(buf)?;
             writeln!(buf, "**View Create SQL**")?;
             if let Some(view) = &t.view {
-                writeln!(buf, "\n```{}```", view.view_query)?;
+                // 본문 내 최장 연속 백틱 길이 m → 펜스 길이 max(3, m + 1)
+                let mut max_run = 0usize;
+                let mut cur = 0usize;
+                for ch in view.view_query.chars() {
+                    if ch == '`' {
+                        cur += 1;
+                        if cur > max_run {
+                            max_run = cur;
+                        }
+                    } else {
+                        cur = 0;
+                    }
+                }
+                let fence_len = std::cmp::max(3, max_run + 1);
+                let fence: String = "`".repeat(fence_len);
+
+                writeln!(buf)?;
+                writeln!(buf, "{fence}sql")?;
+                if view.view_query.ends_with('\n') {
+                    buf.write_all(view.view_query.as_bytes())?;
+                } else {
+                    buf.write_all(view.view_query.as_bytes())?;
+                    writeln!(buf)?;
+                }
+                writeln!(buf, "{fence}")?;
             }
         }
 
@@ -365,6 +398,7 @@ proptest! {
     ) {
         use td_export::export::create_exporter;
         use td_export::model::{OutputFormat, RunConfig, SchemaCatalog};
+        use td_export::secret::Password;
         use tempfile::TempDir;
 
         // 중복 제거
@@ -388,7 +422,7 @@ proptest! {
             endpoint: "testhost".to_string(),
             port: 3306,
             user: "root".to_string(),
-            password: "pass".to_string(),
+            password: Password::new("pass".to_string()),
             target_db: None,
             except_tables: None,
             output_format: OutputFormat::Excel,
@@ -490,6 +524,7 @@ proptest! {
                     index_name: format!("idx{}", i),
                     non_unique: 1,
                     index_columns: format!("col{}", i),
+                    predicate: None,
                 });
             }
             // 제약 추가
@@ -666,4 +701,121 @@ proptest! {
         prop_assert!(read_content.contains(japanese.as_str()));
         prop_assert!(read_content.contains(chinese.as_str()));
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 15.3 회귀 테스트: BASE TABLE 출력 바이트 불변 (Go 호환 유지)
+// Validates: Requirements 3.4, 15.2
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// BASE TABLE 경로의 출력 바이트가 VIEW 수정 전/후 동일함을 고정하는 회귀 테스트.
+///
+/// 이 테스트는 Task 15.1의 VIEW 렌더 변경이 BASE TABLE 경로를 오염시키지 않음을
+/// 보장한다. 기대 바이트는 기존 Markdown 렌더러의 BASE TABLE 출력 포맷을 그대로
+/// 전사한 고정 문자열이다 (Go Excel 버전 호환 유지 포함).
+///
+/// 파일 시스템을 거치지 않기 위해 테스트 헬퍼 `generate_markdown`을 사용한다.
+/// 해당 헬퍼는 production의 `write_markdown`과 동일한 포맷을 재현한다.
+#[test]
+fn base_table_bytes_unchanged_after_view_fence_fix() {
+    // 결정적 입력: BASE TABLE 1개 (컬럼 1 + 인덱스 1 + 제약 1)
+    let table = TableDef {
+        table_name: "orders".to_string(),
+        general: GeneralInfo {
+            table_type: "BASE TABLE".to_string(),
+            engine: Some("InnoDB".to_string()),
+            row_format: Some("Dynamic".to_string()),
+            collate: Some("utf8mb4_general_ci".to_string()),
+            comment: Some("주문".to_string()),
+        },
+        columns: vec![ColumnInfo {
+            column_name: "id".to_string(),
+            default_value: None,
+            nullable: "NO".to_string(),
+            column_type: "int".to_string(),
+            charset: None,
+            collation: None,
+            column_key: Some("PRI".to_string()),
+            extra: Some("auto_increment".to_string()),
+            comment: Some("pk".to_string()),
+        }],
+        indexes: vec![IndexInfo {
+            index_name: "idx_id".to_string(),
+            non_unique: 1,
+            index_columns: "id".to_string(),
+            predicate: None,
+        }],
+        constraints: vec![ConstInfo {
+            constraint_name: "fk_user".to_string(),
+            constraint_column: "user_id".to_string(),
+            reference: "users.id".to_string(),
+            delete_action: "CASCADE".to_string(),
+            update_action: "CASCADE".to_string(),
+        }],
+        view: None,
+        ddl: Some("CREATE TABLE orders ()".to_string()),
+    };
+
+    let actual = generate_markdown("fixtures", &[table]);
+
+    // 기대 출력: 기존 BASE TABLE 렌더러 포맷을 그대로 고정 (오타 "Referance" 유지).
+    // concat!으로 각 줄을 독립 리터럴로 이어 붙여 의도한 선행 공백을 보존한다.
+    // 컬럼 표는 9개 필드 → 파이프 10개.
+    let expected = concat!(
+        "fixtures \n",
+        "=============\n",
+        "\n",
+        "## Table List\n",
+        "- [orders (주문)](#orders)\n",
+        " \n",
+        "## orders\n",
+        "**Information**\n",
+        "|Table type|Engine|Row format|Collate|Comment|\n",
+        "|---|---|---|---|---|\n",
+        "|BASE TABLE|InnoDB|Dynamic|utf8mb4_general_ci|주문|\n",
+        "\n",
+        "**Columns**\n",
+        "|Name|Type|Nullable|Default|Charset|Collation|Key|Extra|Comment|\n",
+        "|---|---|---|---|---|---|---|---|---|\n",
+        "|id|int|NO||||PRI|auto_increment|pk|\n",
+        "\n",
+        "**Index**\n",
+        "- [Normal]idx_id(id)\n",
+        "\n",
+        "**Constraint**\n",
+        "- fk_user FOREIGN KEY (user_id) Referance users.id ON DELETE CASCADE ON UPDATE CASCADE\n",
+        "\n",
+        " \n",
+    );
+
+    assert_eq!(
+        actual, expected,
+        "BASE TABLE 출력 바이트가 변경되었다 (Go 호환 위반).\nactual=\n{actual}\nexpected=\n{expected}",
+    );
+}
+
+/// VIEW 출력이 새 fenced code block 포맷을 준수하는지 고정하는 회귀 테스트.
+///
+/// 요구사항:
+/// - 한 줄 `` ```{}``` `` 패턴 금지
+/// - 빈 줄 → ```` ```sql ```` → 본문 → ```` ``` ````가 각각 별도 줄
+#[test]
+fn view_renders_as_fenced_sql_block_on_separate_lines() {
+    let view = make_view_table("my_view");
+    let actual = generate_markdown("v_fix", &[view]);
+
+    // 옛 버그 패턴이 없어야 한다.
+    assert!(
+        !actual.contains("```SELECT * FROM test```"),
+        "VIEW 렌더에 옛 한 줄 패턴이 남아 있음: actual=\n{actual}"
+    );
+
+    // 새 포맷: ```sql 라인, 본문 라인, ``` 라인이 각각 별도 줄
+    let lines: Vec<&str> = actual.lines().collect();
+    let open_idx = lines
+        .iter()
+        .position(|l| *l == "```sql")
+        .unwrap_or_else(|| panic!("```sql 열기 펜스 라인이 없음: actual=\n{actual}"));
+    assert_eq!(lines[open_idx + 1], "SELECT * FROM test");
+    assert_eq!(lines[open_idx + 2], "```");
 }

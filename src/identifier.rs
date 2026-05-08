@@ -2,9 +2,11 @@ use crate::error::AppError;
 
 /// MySQL 식별자를 백틱으로 인용한다.
 /// 내부 백틱은 이중 백틱으로 이스케이프한다.
+/// 위험 문자(`;`, `/*`, `*/`, 개행) 포함 시 `AppError::UnsafeIdentifier` 반환.
 pub fn quote_identifier(id: &str) -> Result<String, AppError> {
+    validate_identifier(id)?;
     let escaped = id.replace('`', "``");
-    Ok(format!("`{}`", escaped))
+    Ok(format!("`{escaped}`"))
 }
 
 /// 인용된 식별자에서 원본을 복원한다.
@@ -22,8 +24,10 @@ pub fn unquote_identifier(quoted: &str) -> Result<String, AppError> {
 
 /// PostgreSQL 식별자를 큰따옴표로 인용한다.
 /// 내부 큰따옴표(`"`)는 이중 큰따옴표(`""`)로 이스케이프한다.
-/// null 바이트(`\0`) 포함 시 에러를 반환한다.
+/// 위험 문자(`;`, `/*`, `*/`, 개행) 또는 null 바이트(`\0`) 포함 시
+/// `AppError::UnsafeIdentifier`를 반환한다.
 pub fn quote_pg_identifier(id: &str) -> Result<String, AppError> {
+    validate_identifier(id)?;
     if id.contains('\0') {
         return Err(AppError::UnsafeIdentifier(
             "null 바이트를 포함하는 식별자".to_string(),

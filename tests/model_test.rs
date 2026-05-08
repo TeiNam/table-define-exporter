@@ -1,5 +1,6 @@
 use proptest::prelude::*;
 use td_export::model::{DbType, OutputFormat, RunConfig};
+use td_export::secret::Password;
 
 // Property 1a: OutputFormat 왕복 (Round-trip)
 // 모든 변형에 대해 from_str(as_str(fmt)) == fmt
@@ -14,7 +15,7 @@ proptest! {
         Just(OutputFormat::Sql),
     ]) {
         let s = fmt.as_str();
-        let parsed = OutputFormat::from_str(s).unwrap();
+        let parsed = s.parse::<OutputFormat>().unwrap();
         prop_assert_eq!(parsed, fmt);
     }
 
@@ -22,7 +23,7 @@ proptest! {
     #[test]
     fn output_format_totality(s in ".*") {
         // 패닉 없이 Ok 또는 Err 반환해야 함
-        let _ = OutputFormat::from_str(&s);
+        let _ = s.parse::<OutputFormat>();
     }
 
     // Property 1c: 대소문자 무관 파싱
@@ -34,7 +35,7 @@ proptest! {
         let mixed: String = base.chars().enumerate().map(|(i, c)| {
             if (mask >> i) & 1 == 1 { c.to_ascii_uppercase() } else { c }
         }).collect();
-        let result = OutputFormat::from_str(&mixed);
+        let result = mixed.parse::<OutputFormat>();
         prop_assert!(result.is_ok(), "대소문자 조합 '{mixed}'에 대해 파싱 실패");
     }
 }
@@ -43,29 +44,29 @@ proptest! {
 #[test]
 fn output_format_from_str_valid() {
     assert_eq!(
-        OutputFormat::from_str("excel").unwrap(),
+        "excel".parse::<OutputFormat>().unwrap(),
         OutputFormat::Excel
     );
     assert_eq!(
-        OutputFormat::from_str("markdown").unwrap(),
+        "markdown".parse::<OutputFormat>().unwrap(),
         OutputFormat::Markdown
     );
-    assert_eq!(OutputFormat::from_str("sql").unwrap(), OutputFormat::Sql);
+    assert_eq!("sql".parse::<OutputFormat>().unwrap(), OutputFormat::Sql);
     assert_eq!(
-        OutputFormat::from_str("EXCEL").unwrap(),
+        "EXCEL".parse::<OutputFormat>().unwrap(),
         OutputFormat::Excel
     );
     assert_eq!(
-        OutputFormat::from_str("Excel").unwrap(),
+        "Excel".parse::<OutputFormat>().unwrap(),
         OutputFormat::Excel
     );
 }
 
 #[test]
 fn output_format_from_str_invalid() {
-    assert!(OutputFormat::from_str("csv").is_err());
-    assert!(OutputFormat::from_str("").is_err());
-    assert!(OutputFormat::from_str("json").is_err());
+    assert!("csv".parse::<OutputFormat>().is_err());
+    assert!("".parse::<OutputFormat>().is_err());
+    assert!("json".parse::<OutputFormat>().is_err());
 }
 
 // Property 4: 비밀번호 비노출 (Password Non-Leak)
@@ -84,7 +85,7 @@ proptest! {
             endpoint: endpoint.clone(),
             port,
             user: "testuser".to_string(),
-            password: password.clone(),
+            password: Password::new(password.clone()),
             target_db: None,
             except_tables: None,
             output_format: OutputFormat::Excel,
@@ -113,7 +114,7 @@ proptest! {
             endpoint: "localhost".to_string(),
             port: 3306,
             user: "root".to_string(),
-            password: password.clone(),
+            password: Password::new(password.clone()),
             target_db: None,
             except_tables: None,
             output_format: OutputFormat::Excel,
@@ -139,7 +140,7 @@ fn run_config_debug_redacts_password() {
         endpoint: "localhost".to_string(),
         port: 3306,
         user: "root".to_string(),
-        password: "super_secret_password".to_string(),
+        password: Password::new("super_secret_password".to_string()),
         target_db: None,
         except_tables: None,
         output_format: OutputFormat::Excel,
@@ -263,7 +264,7 @@ proptest! {
         Just(DbType::Postgres),
     ]) {
         let s = db_type.as_str();
-        let parsed = DbType::from_str(s).unwrap();
+        let parsed = s.parse::<DbType>().unwrap();
         prop_assert_eq!(parsed, db_type);
     }
 
@@ -273,7 +274,7 @@ proptest! {
     /// 임의 문자열에 대해 패닉 없이 Ok 또는 Err 반환
     #[test]
     fn db_type_totality(s in ".*") {
-        let _ = DbType::from_str(&s);
+        let _ = s.parse::<DbType>();
     }
 
     /// **Validates: Requirements 1.1**
@@ -288,7 +289,7 @@ proptest! {
         let mixed: String = base.chars().enumerate().map(|(i, c)| {
             if (mask >> i) & 1 == 1 { c.to_ascii_uppercase() } else { c }
         }).collect();
-        let result = DbType::from_str(&mixed);
+        let result = mixed.parse::<DbType>();
         prop_assert!(result.is_ok(), "대소문자 조합 '{mixed}'에 대해 파싱 실패");
     }
 }
@@ -299,20 +300,20 @@ proptest! {
 
 #[test]
 fn db_type_from_str_valid() {
-    assert_eq!(DbType::from_str("mysql").unwrap(), DbType::MySql);
-    assert_eq!(DbType::from_str("postgres").unwrap(), DbType::Postgres);
-    assert_eq!(DbType::from_str("postgresql").unwrap(), DbType::Postgres);
-    assert_eq!(DbType::from_str("MYSQL").unwrap(), DbType::MySql);
-    assert_eq!(DbType::from_str("Postgres").unwrap(), DbType::Postgres);
-    assert_eq!(DbType::from_str("PostgreSQL").unwrap(), DbType::Postgres);
+    assert_eq!("mysql".parse::<DbType>().unwrap(), DbType::MySql);
+    assert_eq!("postgres".parse::<DbType>().unwrap(), DbType::Postgres);
+    assert_eq!("postgresql".parse::<DbType>().unwrap(), DbType::Postgres);
+    assert_eq!("MYSQL".parse::<DbType>().unwrap(), DbType::MySql);
+    assert_eq!("Postgres".parse::<DbType>().unwrap(), DbType::Postgres);
+    assert_eq!("PostgreSQL".parse::<DbType>().unwrap(), DbType::Postgres);
 }
 
 #[test]
 fn db_type_from_str_invalid() {
-    assert!(DbType::from_str("sqlite").is_err());
-    assert!(DbType::from_str("").is_err());
-    assert!(DbType::from_str("oracle").is_err());
-    assert!(DbType::from_str("pg").is_err());
+    assert!("sqlite".parse::<DbType>().is_err());
+    assert!("".parse::<DbType>().is_err());
+    assert!("oracle".parse::<DbType>().is_err());
+    assert!("pg".parse::<DbType>().is_err());
 }
 
 #[test]
@@ -333,7 +334,7 @@ fn run_config_debug_includes_db_type_and_database() {
         endpoint: "localhost".to_string(),
         port: 5432,
         user: "pguser".to_string(),
-        password: "secret".to_string(),
+        password: Password::new("secret".to_string()),
         target_db: None,
         except_tables: None,
         output_format: OutputFormat::Excel,
@@ -345,4 +346,107 @@ fn run_config_debug_includes_db_type_and_database() {
     assert!(debug_str.contains("mydb"));
     assert!(debug_str.contains("[REDACTED]"));
     assert!(!debug_str.contains("secret"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Feature: code-quality-improvements, Property 13: FromStr 동등성 —
+// `s.parse::<T>()`와 `<T as std::str::FromStr>::from_str(s)`는 모든 문자열에
+// 대해 동일한 Result를 반환하며, 잘못된 입력은 `AppError::InvalidOutputFormat` /
+// `AppError::InvalidDbType` 변형을 원본 문자열과 함께 반환한다.
+// Validates: Requirements 14.1, 14.5
+// ─────────────────────────────────────────────────────────────────────────────
+
+use std::str::FromStr;
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(100))]
+
+    /// **Validates: Requirements 14.1, 14.5**
+    ///
+    /// Property 13a: OutputFormat의 turbofish parse와 명시적 trait FromStr 호출이
+    /// 모든 입력에 대해 동일한 Result(Ok 값 또는 Err 변형/내부 문자열)를 반환한다.
+    #[test]
+    fn prop13_output_format_fromstr_equivalence(s in ".*") {
+        let via_parse = s.parse::<OutputFormat>();
+        let via_trait = <OutputFormat as FromStr>::from_str(&s);
+
+        match (via_parse, via_trait) {
+            (Ok(a), Ok(b)) => prop_assert_eq!(a, b),
+            (Err(AppError::InvalidOutputFormat(a)), Err(AppError::InvalidOutputFormat(b))) => {
+                prop_assert_eq!(a, b);
+            }
+            (Err(_), Err(_)) => {
+                prop_assert!(false, "동일 입력에서 서로 다른 AppError 변형이 반환됨");
+            }
+            _ => prop_assert!(false, "parse와 trait가 서로 다른 성공/실패 결과를 냄"),
+        }
+    }
+
+    /// **Validates: Requirements 14.5**
+    ///
+    /// Property 13b: 유효 variant 문자열을 제외한 임의 입력은
+    /// `AppError::InvalidOutputFormat(s)`를 원본 문자열 그대로 보존하여 반환한다.
+    #[test]
+    fn prop13_output_format_invalid_preserves_input(
+        s in ".*".prop_filter(
+            "유효 OutputFormat 문자열 제외",
+            |s| !matches!(s.to_ascii_lowercase().as_str(), "excel" | "markdown" | "sql"),
+        )
+    ) {
+        let err = <OutputFormat as FromStr>::from_str(&s).unwrap_err();
+        match err {
+            AppError::InvalidOutputFormat(got) => prop_assert_eq!(got, s),
+            other => prop_assert!(
+                false,
+                "예상과 다른 AppError 변형: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// **Validates: Requirements 14.1, 14.5**
+    ///
+    /// Property 13c: DbType의 turbofish parse와 명시적 trait FromStr 호출이
+    /// 모든 입력에 대해 동일한 Result를 반환한다.
+    #[test]
+    fn prop13_db_type_fromstr_equivalence(s in ".*") {
+        let via_parse = s.parse::<DbType>();
+        let via_trait = <DbType as FromStr>::from_str(&s);
+
+        match (via_parse, via_trait) {
+            (Ok(a), Ok(b)) => prop_assert_eq!(a, b),
+            (Err(AppError::InvalidDbType(a)), Err(AppError::InvalidDbType(b))) => {
+                prop_assert_eq!(a, b);
+            }
+            (Err(_), Err(_)) => {
+                prop_assert!(false, "동일 입력에서 서로 다른 AppError 변형이 반환됨");
+            }
+            _ => prop_assert!(false, "parse와 trait가 서로 다른 성공/실패 결과를 냄"),
+        }
+    }
+
+    /// **Validates: Requirements 14.5**
+    ///
+    /// Property 13d: 유효 variant 문자열을 제외한 임의 입력은
+    /// `AppError::InvalidDbType(s)`를 원본 문자열 그대로 보존하여 반환한다.
+    #[test]
+    fn prop13_db_type_invalid_preserves_input(
+        s in ".*".prop_filter(
+            "유효 DbType 문자열 제외",
+            |s| !matches!(
+                s.to_ascii_lowercase().as_str(),
+                "mysql" | "postgres" | "postgresql"
+            ),
+        )
+    ) {
+        let err = <DbType as FromStr>::from_str(&s).unwrap_err();
+        match err {
+            AppError::InvalidDbType(got) => prop_assert_eq!(got, s),
+            other => prop_assert!(
+                false,
+                "예상과 다른 AppError 변형: {:?}",
+                other
+            ),
+        }
+    }
 }

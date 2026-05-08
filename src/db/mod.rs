@@ -3,8 +3,12 @@
 //! `DbClient` 트레이트를 정의하고, `DbClientEnum` 열거형으로
 //! MySQL/PostgreSQL 클라이언트를 통합 디스패치한다.
 
+pub mod connect;
 pub mod mysql;
 pub mod postgres;
+pub mod row_helpers;
+
+pub(crate) use row_helpers::try_get_or_warn;
 
 use async_trait::async_trait;
 

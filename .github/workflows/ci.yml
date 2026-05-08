@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # 체크 잡: 포맷, 린트, 테스트, 커버리지를 MSRV(1.75)와 stable 매트릭스에서 수행
+  check:
+    name: Check (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.75", "stable"]
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (${{ matrix.rust }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all-features
+
+      # cargo-llvm-cov 는 stable 에서만 실행 (MSRV 1.75 에서는 coverage 도구 미지원 가능성)
+      - name: Install cargo-llvm-cov
+        if: matrix.rust == 'stable'
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # 라인 커버리지 70% 미만이면 실패 (Requirement 16.5)
+      - name: cargo llvm-cov (fail under 70%)
+        if: matrix.rust == 'stable'
+        run: cargo llvm-cov --all-features --fail-under-lines 70
+
+  # 의존성 취약점 감사 잡: rustsec/audit-check 가 취약점 발견 시 워크플로 실패
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Run security audit
+        uses: rustsec/audit-check@v1.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

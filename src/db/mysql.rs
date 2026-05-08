@@ -2,6 +2,7 @@ use sqlx::mysql::MySqlPoolOptions;
 use std::collections::HashMap;
 
 use crate::{
+    db::try_get_or_warn,
     error::AppError,
     identifier,
     model::{
@@ -25,13 +26,13 @@ const SYSTEM_SCHEMAS: &[&str] = &[
 impl MySqlClient {
     /// 커넥션 풀 생성 + `SELECT 1` 검증
     pub async fn connect(config: &RunConfig) -> Result<Self, AppError> {
-        let url = format!(
-            "mysql://{}:{}@{}:{}/information_schema",
-            config.user, config.password, config.endpoint, config.port
-        );
+        // URL 포매팅 대신 타입 안전한 ConnectOptions 빌더를 사용해 비밀번호에
+        // 포함될 수 있는 URL 예약 문자(`@`, `:`, `/`, `#`, `?` 등) 이스케이프
+        // 문제를 원천적으로 회피한다.
+        let options = crate::db::connect::mysql_options(config);
         let pool = MySqlPoolOptions::new()
             .max_connections(4)
-            .connect(&url)
+            .connect_with(options)
             .await
             .map_err(|e| AppError::DbConnection {
                 endpoint: config.endpoint.clone(),
@@ -182,9 +183,9 @@ impl MySqlClient {
 
         let mut columns = Vec::new();
         for row in rows {
-            use sqlx::Row;
-            let extra: Option<String> = row.try_get("extra").unwrap_or(None);
-            let gen_expr: Option<String> = row.try_get("generation_expression").unwrap_or(None);
+            let extra: Option<String> = try_get_or_warn(&row, "extra", schema, table);
+            let gen_expr: Option<String> =
+                try_get_or_warn(&row, "generation_expression", schema, table);
             // extra와 generation_expression을 공백으로 연결
             // generation_expression이 NULL이거나 빈 문자열이면 extra만 사용
             let extra_combined = match (extra, gen_expr) {
@@ -194,15 +195,15 @@ impl MySqlClient {
                 _ => None,
             };
             columns.push(ColumnInfo {
-                column_name: row.try_get("column_name").unwrap_or_default(),
-                default_value: row.try_get("column_default").unwrap_or(None),
-                nullable: row.try_get("is_nullable").unwrap_or_default(),
-                column_type: row.try_get("column_type").unwrap_or_default(),
-                charset: row.try_get("character_set_name").unwrap_or(None),
-                collation: row.try_get("collation_name").unwrap_or(None),
-                column_key: row.try_get("column_key").unwrap_or(None),
+                column_name: try_get_or_warn(&row, "column_name", schema, table),
+                default_value: try_get_or_warn(&row, "column_default", schema, table),
+                nullable: try_get_or_warn(&row, "is_nullable", schema, table),
+                column_type: try_get_or_warn(&row, "column_type", schema, table),
+                charset: try_get_or_warn(&row, "character_set_name", schema, table),
+                collation: try_get_or_warn(&row, "collation_name", schema, table),
+                column_key: try_get_or_warn(&row, "column_key", schema, table),
                 extra: extra_combined,
-                comment: row.try_get("column_comment").unwrap_or(None),
+                comment: try_get_or_warn(&row, "column_comment", schema, table),
             });
         }
         Ok(columns)
@@ -234,9 +235,11 @@ impl MySqlClient {
         for row in rows {
             use sqlx::Row;
             indexes.push(IndexInfo {
-                index_name: row.try_get("index_name").unwrap_or_default(),
+                index_name: try_get_or_warn(&row, "index_name", schema, table),
+                // non_unique는 실패 시 "Unique가 아님"(=1) 기본값으로 유지해야 과도 축소를 방지
                 non_unique: row.try_get("non_unique").unwrap_or(1),
-                index_columns: row.try_get("index_columns").unwrap_or_default(),
+                index_columns: try_get_or_warn(&row, "index_columns", schema, table),
+                predicate: None,
             });
         }
         Ok(indexes)
@@ -278,13 +281,12 @@ impl MySqlClient {
 
         let mut constraints = Vec::new();
         for row in rows {
-            use sqlx::Row;
             constraints.push(ConstInfo {
-                constraint_name: row.try_get("constraint_name").unwrap_or_default(),
-                constraint_column: row.try_get("constraint_column").unwrap_or_default(),
-                reference: row.try_get("reference_col").unwrap_or_default(),
-                delete_action: row.try_get("delete_rule").unwrap_or_default(),
-                update_action: row.try_get("update_rule").unwrap_or_default(),
+                constraint_name: try_get_or_warn(&row, "constraint_name", schema, table),
+                constraint_column: try_get_or_warn(&row, "constraint_column", schema, table),
+                reference: try_get_or_warn(&row, "reference_col", schema, table),
+                delete_action: try_get_or_warn(&row, "delete_rule", schema, table),
+                update_action: try_get_or_warn(&row, "update_rule", schema, table),
             });
         }
         Ok(constraints)
