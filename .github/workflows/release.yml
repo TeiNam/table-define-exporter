@@ -1,0 +1,156 @@
+name: Release
+
+# main 브랜치에 push 될 때마다 자동으로 patch 버전을 올려 태그를 붙이고
+# 플랫폼별 릴리즈 바이너리를 만들어 GitHub Release에 업로드한다.
+#
+# 무한 루프 방지: 버전 bump 커밋 메시지는 `chore(release): ...` 로 시작하며
+# 이 워크플로는 해당 커밋을 스킵한다. 또한 기본 `GITHUB_TOKEN`으로 생성한
+# push는 새 워크플로를 트리거하지 않으므로 중복 실행 위험도 없다.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  # 1단계: patch 버전을 올리고 Cargo.toml/Cargo.lock 커밋 + 태그 푸시
+  bump:
+    name: Bump version
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      new_tag: ${{ steps.bump.outputs.new_tag }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Determine next version
+        id: bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep -E '^version[[:space:]]*=' Cargo.toml | head -1 | sed -E 's/.*"(.+)".*/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+          NEW_TAG="v$NEW_VERSION"
+          echo "current=$CURRENT"
+          echo "new_version=$NEW_VERSION"
+          echo "new_tag=$NEW_TAG"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Update Cargo.toml version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # BSD/GNU sed 호환: awk로 첫 번째 version 라인만 치환
+          awk -v v="${{ steps.bump.outputs.new_version }}" '
+            BEGIN { updated = 0 }
+            /^version[[:space:]]*=/ && !updated { print "version = \"" v "\""; updated = 1; next }
+            { print }
+          ' Cargo.toml > Cargo.toml.new
+          mv Cargo.toml.new Cargo.toml
+          cargo update -p td-export
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit, tag, push
+        run: |
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): ${{ steps.bump.outputs.new_version }}"
+          git tag -a "${{ steps.bump.outputs.new_tag }}" -m "Release ${{ steps.bump.outputs.new_version }}"
+          git push origin HEAD:main --follow-tags
+
+  # 2단계: 플랫폼별 릴리즈 바이너리 빌드
+  build:
+    name: Build ${{ matrix.target }}
+    needs: bump
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: td-export-linux-x86_64.tar.gz
+            kind: tar
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive: td-export-macos-x86_64.tar.gz
+            kind: tar
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: td-export-macos-aarch64.tar.gz
+            kind: tar
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: td-export-windows-x86_64.zip
+            kind: zip
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          # bump 잡이 생성한 태그 커밋을 기준으로 빌드하여 Cargo.toml 새 버전을 반영
+          ref: ${{ needs.bump.outputs.new_tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (tar.gz)
+        if: matrix.kind == 'tar'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "target/${{ matrix.target }}/release"
+          tar czf "../../../${{ matrix.archive }}" td-export
+
+      - name: Package (zip)
+        if: matrix.kind == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/td-export.exe" -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+  # 3단계: 모든 바이너리를 모아 GitHub Release 생성
+  publish:
+    name: Publish release
+    needs: [bump, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.bump.outputs.new_tag }}
+          name: ${{ needs.bump.outputs.new_tag }}
+          files: artifacts/*
+          generate_release_notes: true
