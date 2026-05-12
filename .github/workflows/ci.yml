@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+env:
+  # Node.js 20 deprecation 경고 해소: actions/checkout@v4 등이 Node.js 24로 실행되도록 강제
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   # 체크 잡: 포맷, 린트, 테스트, 커버리지를 MSRV(1.75)와 stable 매트릭스에서 수행
   check:
@@ -42,7 +46,7 @@ jobs:
         if: matrix.rust == 'stable'
         run: cargo llvm-cov --all-features --fail-under-lines 70
 
-  # 의존성 취약점 감사 잡: rustsec/audit-check 가 취약점 발견 시 워크플로 실패
+  # 의존성 취약점 감사 잡: cargo audit 직접 실행 (.cargo/audit.toml의 ignore 목록 참조)
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
@@ -50,7 +54,11 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Run security audit
-        uses: rustsec/audit-check@v1.4.1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: cargo audit
