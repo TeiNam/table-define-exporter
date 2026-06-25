@@ -4,7 +4,7 @@
 //! `ExitCode` 반환만 담당한다. 에러는 단일 `tracing::error!` 지점에서 기록된다.
 
 use std::process::ExitCode;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 mod run;
 

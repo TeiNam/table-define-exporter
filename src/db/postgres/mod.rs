@@ -14,9 +14,9 @@ mod parse;
 mod types;
 
 pub use ddl::build_pg_ddl_from_metadata;
-pub use parse::{parse_pg_indexdef, ParsedIndex};
+pub use parse::{ParsedIndex, parse_pg_indexdef};
 pub use types::{
-    build_pg_column_type, determine_pg_extra, PgConstraintType, PgDdlColumn, PgDdlConstraint,
+    PgConstraintType, PgDdlColumn, PgDdlConstraint, build_pg_column_type, determine_pg_extra,
 };
 
 /// PostgreSQL 시스템 스키마 목록 (정적 매칭 대상)
@@ -164,7 +164,9 @@ impl PgClient {
         }
         query_str.push_str(" ORDER BY t.table_name");
 
-        let mut q = sqlx::query(&query_str).bind(schema);
+        // SQL 골격은 코드로만 생성하고 사용자 값(schema/except 패턴)은 전부 `$n` 바인딩한다.
+        // 동적 문자열이지만 주입 위험이 없으므로 AssertSqlSafe로 감싼다 (sqlx 0.9 요구).
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query_str)).bind(schema);
         for pat in except {
             q = q.bind(pat);
         }

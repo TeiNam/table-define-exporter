@@ -7,7 +7,7 @@
 use crate::{error::AppError, identifier::quote_pg_identifier};
 
 use super::parse::{extract_check_expression, parse_fk_actions_from_condef, quote_column_list};
-use super::types::{build_pg_column_type, PgConstraintType, PgDdlColumn, PgDdlConstraint};
+use super::types::{PgConstraintType, PgDdlColumn, PgDdlConstraint, build_pg_column_type};
 use crate::db::try_get_or_warn;
 
 /// 테이블 메타데이터로부터 PostgreSQL DDL 문자열을 재구성한다.

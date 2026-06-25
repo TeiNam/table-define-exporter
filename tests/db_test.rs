@@ -1,8 +1,8 @@
 use proptest::prelude::*;
 use td_export::db::postgres::{
-    build_pg_column_type, build_pg_ddl_from_metadata, determine_pg_extra, filter_pg_schemas,
-    is_pg_system_schema, parse_pg_indexdef, ParsedIndex, PgConstraintType, PgDdlColumn,
-    PgDdlConstraint,
+    ParsedIndex, PgConstraintType, PgDdlColumn, PgDdlConstraint, build_pg_column_type,
+    build_pg_ddl_from_metadata, determine_pg_extra, filter_pg_schemas, is_pg_system_schema,
+    parse_pg_indexdef,
 };
 use td_export::model::{ColumnInfo, GeneralInfo, TableDef, ViewInfo};
 

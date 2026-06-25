@@ -109,7 +109,9 @@ impl MySqlClient {
         }
         query_str.push_str(" ORDER BY table_name");
 
-        let mut q = sqlx::query(&query_str).bind(schema);
+        // SQL 골격은 코드로만 생성하고 사용자 값(schema/except 패턴)은 전부 `?` 바인딩한다.
+        // 동적 문자열이지만 주입 위험이 없으므로 AssertSqlSafe로 감싼다 (sqlx 0.9 요구).
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query_str)).bind(schema);
         for pat in except {
             q = q.bind(pat);
         }
@@ -301,7 +303,8 @@ impl MySqlClient {
         let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
 
         // SHOW 문은 prepared(binary) protocol에서 행이 비어 나온다. raw_sql은 text protocol로 실행.
-        let row = sqlx::raw_sql(&sql)
+        // sql의 식별자는 quote_identifier로 백틱 인용 + 위험문자 거부됨 → AssertSqlSafe 안전 (sqlx 0.9).
+        let row = sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
             .fetch_one(&self.pool)
             .await
             .map_err(|e| AppError::MetadataQuery {
@@ -328,7 +331,8 @@ impl MySqlClient {
         let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
 
         // SHOW 문은 prepared(binary) protocol에서 행이 비어 나온다. raw_sql은 text protocol로 실행.
-        let row = sqlx::raw_sql(&sql)
+        // sql의 식별자는 quote_identifier로 백틱 인용 + 위험문자 거부됨 → AssertSqlSafe 안전 (sqlx 0.9).
+        let row = sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
             .fetch_one(&self.pool)
             .await
             .map_err(|e| AppError::MetadataQuery {

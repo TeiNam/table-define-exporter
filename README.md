@@ -1,6 +1,6 @@
 # td-export
 
-![Rust](https://img.shields.io/badge/Rust-1.78+-orange.svg)
+![Rust](https://img.shields.io/badge/Rust-1.85+-orange.svg)
 ![MySQL](https://img.shields.io/badge/MySQL-5.7+-4479A1.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--17-336791.svg)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI/CD-2088FF.svg)
@@ -53,7 +53,7 @@ MySQL 및 PostgreSQL 테이블 정의서를 Excel(.xlsx), Markdown(.md), SQL(.sq
 
 ### 소스에서 빌드
 
-사전 요구사항: Rust 1.78 이상 (stable).
+사전 요구사항: Rust 1.85 이상 (stable).
 
 ```bash
 cargo build --release
@@ -177,11 +177,11 @@ cargo llvm-cov --all-features
 
 ### MSRV
 
-**Minimum Supported Rust Version**: 1.78
+**Minimum Supported Rust Version**: 1.85 (Rust edition 2024 사용)
 
 ### CI/CD
 
-- **CI**: `cargo fmt` / `clippy` / `test` / `cargo-llvm-cov` (70% 라인 커버리지 게이트) / `cargo audit` — Rust 1.78와 stable 매트릭스
+- **CI**: `cargo fmt` / `clippy` / `test` / `cargo-llvm-cov` (70% 라인 커버리지 게이트) / `cargo audit` — Rust 1.85와 stable 매트릭스
 - **Release**: `main` 브랜치에 push 시 자동으로 patch 버전 bump + 4개 플랫폼(linux/macos×2/windows) 바이너리 빌드 + GitHub Release 생성
 
 ## 원본(Go)과의 주요 차이점

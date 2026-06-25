@@ -75,11 +75,7 @@ pub fn parse_comma_separated(input: &str) -> Option<Vec<String>> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    if items.is_empty() {
-        None
-    } else {
-        Some(items)
-    }
+    if items.is_empty() { None } else { Some(items) }
 }
 
 /// 숫자 또는 이름 입력을 `OutputFormat`으로 변환한다.

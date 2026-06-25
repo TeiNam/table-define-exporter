@@ -19,8 +19,8 @@
 //!
 //! Validates: Requirements 5.4
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use proptest::prelude::*;
 use tracing::span;

@@ -16,10 +16,10 @@
 //!
 //! Validates: Requirements 6.3
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use proptest::prelude::*;
 use tracing::span;
 use tracing::subscriber::with_default;

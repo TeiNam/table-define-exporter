@@ -12,7 +12,7 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
 use proptest::prelude::*;
-use td_export::db::postgres::{parse_pg_indexdef, ParsedIndex};
+use td_export::db::postgres::{ParsedIndex, parse_pg_indexdef};
 
 // --- 회귀 예제 테스트 ---
 

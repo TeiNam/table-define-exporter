@@ -13,9 +13,9 @@
 //!   `PgDdlConstraint`
 
 use td_export::db::postgres::{
-    build_pg_column_type, build_pg_ddl_from_metadata, determine_pg_extra, filter_pg_schemas,
-    is_pg_system_schema, parse_pg_indexdef, ParsedIndex, PgClient, PgConstraintType, PgDdlColumn,
-    PgDdlConstraint,
+    ParsedIndex, PgClient, PgConstraintType, PgDdlColumn, PgDdlConstraint, build_pg_column_type,
+    build_pg_ddl_from_metadata, determine_pg_extra, filter_pg_schemas, is_pg_system_schema,
+    parse_pg_indexdef,
 };
 
 #[test]
