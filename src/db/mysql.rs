@@ -301,15 +301,14 @@ impl MySqlClient {
         let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
 
         // SHOW 문은 prepared(binary) protocol에서 행이 비어 나온다. raw_sql은 text protocol로 실행.
-        let row =
-            sqlx::raw_sql(&sql)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| AppError::MetadataQuery {
-                    schema: schema.to_string(),
-                    table: table.to_string(),
-                    source: e,
-                })?;
+        let row = sqlx::raw_sql(&sql)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AppError::MetadataQuery {
+                schema: schema.to_string(),
+                table: table.to_string(),
+                source: e,
+            })?;
 
         use sqlx::Row;
         Ok(ViewInfo {
@@ -329,15 +328,14 @@ impl MySqlClient {
         let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
 
         // SHOW 문은 prepared(binary) protocol에서 행이 비어 나온다. raw_sql은 text protocol로 실행.
-        let row =
-            sqlx::raw_sql(&sql)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| AppError::MetadataQuery {
-                    schema: schema.to_string(),
-                    table: table.to_string(),
-                    source: e,
-                })?;
+        let row = sqlx::raw_sql(&sql)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AppError::MetadataQuery {
+                schema: schema.to_string(),
+                table: table.to_string(),
+                source: e,
+            })?;
 
         // 연결 charset에 따라 `Create Table`이 binary로 올 수 있어 ddl_column으로 복원.
         // VIEW면 `Create Table` 컬럼이 없고 `Create View`가 온다 — 그쪽으로 폴백.
