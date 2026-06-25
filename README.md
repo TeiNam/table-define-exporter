@@ -36,6 +36,7 @@ MySQL 및 PostgreSQL 테이블 정의서를 Excel(.xlsx), Markdown(.md), SQL(.sq
 - PostgreSQL 배열 타입 파라미터 보존 (`varchar(255)[]`, `numeric(10,2)[]` 등)
 - UTF-8 인코딩 출력 (BOM 미포함)
 - PostgreSQL 13~17 버전 호환
+- 추출 계측: 테이블별 추출이 1초를 넘으면 경고 로그, 스키마별 수집 메타데이터의 메모리 사용량 추정 표시
 
 ## 설치
 
@@ -195,6 +196,7 @@ cargo llvm-cov --all-features
 | 테이블 메타데이터 수집 | 직렬 | 병렬(`buffered(4)`, 순서 보존) |
 | PostgreSQL 지원 | — | 추가 |
 | 파셜 인덱스 `WHERE` 보존 | — | 추가 |
+| 추출 시간/메모리 계측 | — | 추가 (느린 테이블 경고 + 메모리 추정) |
 
 ### 출력 호환성
 

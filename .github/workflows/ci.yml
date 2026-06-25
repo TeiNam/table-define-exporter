@@ -2,7 +2,16 @@ name: CI
 
 on:
   push:
+    # 문서/메타 파일만 바뀐 push는 빌드하지 않는다 (코드 무관 변경).
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
 
 env:
   # Node.js 20 deprecation 경고 해소: actions/checkout@v4 등이 Node.js 24로 실행되도록 강제

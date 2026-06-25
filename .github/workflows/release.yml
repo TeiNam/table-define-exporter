@@ -10,6 +10,11 @@ on:
   push:
     branches:
       - main
+    # 문서/메타 파일만 바뀐 push는 릴리즈하지 않는다 (버전 bump 불필요).
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
