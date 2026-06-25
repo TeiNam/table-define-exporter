@@ -133,8 +133,9 @@ RUST_LOG=debug ./td-export
 ### SQL (`{schema}({endpoint}).sql`)
 
 - 스키마별 파일 생성
-- 데이터베이스 헤더 주석 포함
-- 테이블별: `DROP TABLE IF EXISTS` (식별자 인용 적용) + 원본 DDL
+- 데이터베이스 헤더 주석(`/* Database : ... */`) 포함
+- 테이블별: 테이블 주석(`/* Table : ... */`) + 원본 CREATE DDL (정확히 하나의 `;`로 종결)
+- `DROP TABLE IF EXISTS` 구문은 출력하지 않습니다 (CREATE DDL만 출력). 단, 위험 식별자를 포함한 테이블은 안전을 위해 출력에서 스킵합니다.
 
 ## 지원 데이터베이스
 
