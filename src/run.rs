@@ -95,6 +95,28 @@ impl Cli {
 async fn enrich_table(
     db: Arc<DbClientEnum>,
     schema: Arc<str>,
+    table: TableDef,
+    output_format: OutputFormat,
+) -> TableDef {
+    let started = std::time::Instant::now();
+    let table = enrich_table_inner(db, Arc::clone(&schema), table, output_format).await;
+
+    // 추출 시간: 1초 초과 시 구문 없이 시간만 경고 (느린 테이블 식별용)
+    let elapsed = started.elapsed();
+    if elapsed.as_secs_f64() >= 1.0 {
+        tracing::warn!(
+            "{}.{} slow extract: {:.2}s",
+            schema,
+            table.table_name,
+            elapsed.as_secs_f64()
+        );
+    }
+    table
+}
+
+async fn enrich_table_inner(
+    db: Arc<DbClientEnum>,
+    schema: Arc<str>,
     mut table: TableDef,
     output_format: OutputFormat,
 ) -> TableDef {
@@ -222,6 +244,10 @@ pub async fn run() -> Result<()> {
         })
         .await;
 
+        // 수집된 메타데이터의 누적 메모리 추정 표시
+        let schema_bytes: usize = tables.iter().map(TableDef::estimated_size).sum();
+        tracing::info!("{} metadata in memory: {}", schema, fmt_bytes(schema_bytes));
+
         // 테이블 데이터 기록
         exporter
             .write_tables(schema, &tables)
@@ -233,4 +259,18 @@ pub async fn run() -> Result<()> {
 
     tracing::info!("Export Complete.");
     Ok(())
+}
+
+/// 바이트 수를 사람이 읽기 좋은 단위로 (B / KiB / MiB).
+fn fmt_bytes(bytes: usize) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MIB {
+        format!("{:.1}MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.1}KiB", b / KIB)
+    } else {
+        format!("{bytes}B")
+    }
 }

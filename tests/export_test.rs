@@ -574,7 +574,7 @@ fn write_sql_to_buf(buf: &mut Vec<u8>, schema: &str, tables: &[TableDef]) -> std
     writeln!(buf, "/* Database : {} */", schema)?;
     for t in tables {
         writeln!(buf, "/* Table : {} */", t.table_name)?;
-        writeln!(buf, "DROP TABLE IF EXISTS {};", t.table_name)?;
+        // CREATE DDL만 출력 — DROP 구문은 제외 (src/export/sql.rs와 동기화)
         let ddl = t.ddl.as_deref().unwrap_or("");
         writeln!(buf, "{};\n\n", ddl)?;
     }

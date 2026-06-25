@@ -300,8 +300,9 @@ impl MySqlClient {
         let quoted_table = identifier::quote_identifier(table)?;
         let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
 
+        // SHOW 문은 prepared(binary) protocol에서 행이 비어 나온다. raw_sql은 text protocol로 실행.
         let row =
-            sqlx::query(&sql)
+            sqlx::raw_sql(&sql)
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|e| AppError::MetadataQuery {
@@ -312,7 +313,8 @@ impl MySqlClient {
 
         use sqlx::Row;
         Ok(ViewInfo {
-            view_query: row.try_get("Create View").unwrap_or_default(),
+            // charset에 따라 binary로 올 수 있어 ddl_column으로 복원 (get_table_ddl 주석 참고)
+            view_query: ddl_column(&row, "Create View").unwrap_or_default(),
             charset: row.try_get("character_set_client").unwrap_or_default(),
             collate: row.try_get("collation_connection").unwrap_or_default(),
         })
@@ -326,8 +328,9 @@ impl MySqlClient {
         let quoted_table = identifier::quote_identifier(table)?;
         let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
 
+        // SHOW 문은 prepared(binary) protocol에서 행이 비어 나온다. raw_sql은 text protocol로 실행.
         let row =
-            sqlx::query(&sql)
+            sqlx::raw_sql(&sql)
                 .fetch_one(&self.pool)
                 .await
                 .map_err(|e| AppError::MetadataQuery {
@@ -336,9 +339,30 @@ impl MySqlClient {
                     source: e,
                 })?;
 
-        use sqlx::Row;
-        Ok(row.try_get("Create Table").unwrap_or_default())
+        // 연결 charset에 따라 `Create Table`이 binary로 올 수 있어 ddl_column으로 복원.
+        // VIEW면 `Create Table` 컬럼이 없고 `Create View`가 온다 — 그쪽으로 폴백.
+        ddl_column(&row, "Create Table")
+            .or_else(|| ddl_column(&row, "Create View"))
+            .ok_or_else(|| AppError::MetadataQuery {
+                schema: schema.to_string(),
+                table: table.to_string(),
+                source: sqlx::Error::RowNotFound,
+            })
     }
+}
+
+/// SHOW CREATE 결과의 DDL 컬럼을 charset에 무관하게 읽는다.
+/// String → 실패 시 raw 바이트 → UTF-8 lossy 순으로 시도. 컬럼이 없으면 None.
+fn ddl_column(row: &sqlx::mysql::MySqlRow, name: &str) -> Option<String> {
+    use sqlx::Row;
+    if let Ok(s) = row.try_get::<String, _>(name) {
+        return Some(s);
+    }
+    // try_get은 컬럼 charset(binary 여부)으로 타입 호환성을 강제해 Vec<u8>도 거부될 수 있다.
+    // try_get_unchecked는 그 검사를 건너뛰고 원시 바이트를 가져온다 — charset 무관.
+    row.try_get_unchecked::<Vec<u8>, _>(name)
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(test)]

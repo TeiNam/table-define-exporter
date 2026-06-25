@@ -154,6 +154,47 @@ pub struct TableDef {
     pub ddl: Option<String>,
 }
 
+impl TableDef {
+    /// 이 TableDef가 차지하는 대략적인 힙 메모리(바이트).
+    /// ponytail: 정확한 할당량이 아니라 문자열 길이 합산 기반 추정치 — 진행 표시용.
+    pub fn estimated_size(&self) -> usize {
+        let opt = |o: &Option<String>| o.as_ref().map_or(0, String::len);
+        let mut total = std::mem::size_of::<TableDef>() + self.table_name.len();
+        total += self.general.table_type.len()
+            + opt(&self.general.engine)
+            + opt(&self.general.row_format)
+            + opt(&self.general.collate)
+            + opt(&self.general.comment);
+        for c in &self.columns {
+            total += std::mem::size_of::<ColumnInfo>()
+                + c.column_name.len()
+                + c.nullable.len()
+                + c.column_type.len()
+                + opt(&c.default_value)
+                + opt(&c.charset)
+                + opt(&c.collation)
+                + opt(&c.column_key)
+                + opt(&c.extra)
+                + opt(&c.comment);
+        }
+        for i in &self.indexes {
+            total += std::mem::size_of::<IndexInfo>() + i.index_name.len() + i.index_columns.len();
+        }
+        for k in &self.constraints {
+            total += std::mem::size_of::<ConstInfo>()
+                + k.constraint_name.len()
+                + k.constraint_column.len()
+                + k.reference.len()
+                + k.delete_action.len()
+                + k.update_action.len();
+        }
+        if let Some(v) = &self.view {
+            total += v.view_query.len() + v.charset.len() + v.collate.len();
+        }
+        total + opt(&self.ddl)
+    }
+}
+
 /// 테이블 일반 정보
 #[derive(Debug, Clone, Default)]
 pub struct GeneralInfo {

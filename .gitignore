@@ -1,4 +1,6 @@
 /target
 *.xlsx
+*.sql
 .DS_Store
 .kiro/
+.claude/

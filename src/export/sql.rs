@@ -149,26 +149,21 @@ fn write_sql(
     writeln!(file, "/* Database : {} */", schema)?;
 
     for t in tables {
-        // Req 2.1, 2.5, 14.2, 14.3: 테이블명을 DB별 규칙으로 인용한다.
-        // 인용이 실패한 테이블(위험 식별자 포함)은 경고 로그 후 스킵한다.
-        let quoted_name = match quote_table_name(db_type, &t.table_name) {
-            Ok(name) => name,
-            Err(e) => {
-                tracing::warn!(
-                    schema,
-                    table = %t.table_name,
-                    error = %e,
-                    "위험한 식별자를 포함한 테이블을 SQL 출력에서 스킵"
-                );
-                continue;
-            }
-        };
+        // Req 2.5, 14.3: 위험 식별자를 포함한 테이블은 출력에서 스킵한다 (DROP은 더 이상
+        // 출력하지 않지만, 주석/DDL에 위험 식별자가 새는 것을 막기 위해 검증은 유지).
+        if let Err(e) = quote_table_name(db_type, &t.table_name) {
+            tracing::warn!(
+                schema,
+                table = %t.table_name,
+                error = %e,
+                "위험한 식별자를 포함한 테이블을 SQL 출력에서 스킵"
+            );
+            continue;
+        }
 
         // 테이블 주석
         writeln!(file, "/* Table : {} */", t.table_name)?;
-        // Req 2.1, 14.2: 인용된 테이블명으로 DROP TABLE IF EXISTS 작성
-        writeln!(file, "DROP TABLE IF EXISTS {};", quoted_name)?;
-        // Req 2.2, 2.3, 14.1: DDL 원본을 보존하되 Terminator로 정확히 하나의 `;` 종결
+        // CREATE DDL만 출력 — DROP 구문은 제외. 원본을 보존하되 Terminator로 정확히 하나의 `;` 종결
         let ddl = t.ddl.as_deref().unwrap_or("");
         writeln!(file, "{}\n\n", terminator.apply(ddl))?;
     }
