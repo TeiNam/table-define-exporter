@@ -2,7 +2,7 @@
 name = "td-export"
 version = "0.1.6"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.78"
 
 [[bin]]
 name = "td-export"

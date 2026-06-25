@@ -9,14 +9,15 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # 체크 잡: 포맷, 린트, 테스트, 커버리지를 MSRV(1.75)와 stable 매트릭스에서 수행
+  # 체크 잡: 포맷, 린트, 테스트, 커버리지를 MSRV(1.78)와 stable 매트릭스에서 수행
+  # MSRV 1.78: Cargo.lock v4 포맷을 읽으려면 Cargo 1.78+ 필요
   check:
     name: Check (${{ matrix.rust }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        rust: ["1.75", "stable"]
+        rust: ["1.78", "stable"]
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -36,7 +37,7 @@ jobs:
       - name: cargo test
         run: cargo test --all-features
 
-      # cargo-llvm-cov 는 stable 에서만 실행 (MSRV 1.75 에서는 coverage 도구 미지원 가능성)
+      # cargo-llvm-cov 는 stable 에서만 실행 (MSRV 1.78 에서는 coverage 도구 미지원 가능성)
       - name: Install cargo-llvm-cov
         if: matrix.rust == 'stable'
         uses: taiki-e/install-action@cargo-llvm-cov
