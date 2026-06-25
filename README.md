@@ -173,7 +173,25 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 # 커버리지 (cargo-llvm-cov 필요)
 cargo llvm-cov --all-features
+
+# 의존성 보안 감사 (cargo-audit 필요: cargo install cargo-audit --locked)
+cargo audit
 ```
+
+### 푸시 전 체크리스트
+
+CI가 막는 항목을 로컬에서 미리 검증하면 왕복을 줄일 수 있다. 푸시 전 다음을 순서대로 통과시킬 것:
+
+```bash
+cargo fmt --check                                       # 1. 포맷
+cargo clippy --all-targets --all-features -- -D warnings # 2. 린트 (warning=에러)
+cargo test --all-features                               # 3. 전체 테스트
+cargo audit                                             # 4. 보안 감사
+```
+
+- **의존성 업데이트 시**: `cargo update` 후 반드시 `cargo build`로 MSRV(1.85) 호환을 확인한다. 새 버전이 더 높은 Rust를 요구하면(예: edition 2024를 요구하는 transitive crate) CI MSRV 잡이 깨진다.
+- **edition/MSRV 변경 시**: `Cargo.toml`, `.github/workflows/ci.yml` 매트릭스, 이 README의 표기를 함께 갱신한다.
+- **Cargo.lock 버전 포맷**: 로컬 cargo가 lock을 v4로 다시 쓸 수 있다. CI MSRV가 그 포맷을 읽을 수 있어야 한다(lock v4 → Cargo 1.78+).
 
 ### MSRV
 

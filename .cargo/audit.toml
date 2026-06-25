@@ -2,13 +2,9 @@
 #
 # 여기에 등록된 advisory는 `cargo audit`에서 무시된다.
 # 각 항목에 무시 사유를 반드시 기록한다.
+#
+# 현재 무시 항목 없음. sqlx 0.9 업데이트로 rsa 크레이트 의존이 제거되어
+# RUSTSEC-2023-0071(rsa Marvin Attack) 무시 항목은 더 이상 불필요하여 삭제됨.
 
 [advisories]
-ignore = [
-    # RUSTSEC-2023-0071: rsa 크레이트의 Marvin Attack (타이밍 사이드채널)
-    # 영향 경로: rsa ← sqlx-mysql (caching_sha2_password 인증 핸드셰이크)
-    # 사유: td-export는 RSA 복호화를 수행하지 않으며(클라이언트 측 공개키 암호화만),
-    #       네트워크 타이밍 오라클을 노출하지 않으므로 실질적 영향 없음.
-    #       패치된 rsa 버전이 출시되면 이 항목을 제거하고 의존성을 업데이트할 것.
-    "RUSTSEC-2023-0071",
-]
+ignore = []
