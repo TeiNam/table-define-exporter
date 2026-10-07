@@ -55,7 +55,7 @@ impl Default for ExcelExporter {
 
 impl Exporter for ExcelExporter {
     fn setup(&mut self, catalog: &SchemaCatalog, config: &RunConfig) -> Result<(), AppError> {
-        self.filename = super::workbook_filename(&config.endpoint);
+        self.filename = super::workbook_filename(&super::source_label(config));
         self.schemas = catalog.keys().cloned().collect();
         self.schemas.sort(); // 일관된 순서 보장
 

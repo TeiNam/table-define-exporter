@@ -73,7 +73,7 @@ fn make_view_table(name: &str) -> TableDef {
 // Validates: Requirements 9.1, 10.5, 11.1
 // ─────────────────────────────────────────────────────────────────────────────
 
-use td_export::export::{schema_filename, workbook_filename};
+use td_export::export::{schema_filename, source_label, workbook_filename};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
@@ -121,6 +121,38 @@ proptest! {
             );
         }
     }
+}
+
+/// 같은 호스트라도 포트(기본값이 아닐 때)·PostgreSQL database 가 다르면 파일명이 달라야 한다.
+#[test]
+fn source_label_distinguishes_port_and_database() {
+    use td_export::model::{DbType, OutputFormat, RunConfig};
+    use td_export::secret::Password;
+    let config = |db_type: DbType, port: u16, database: Option<&str>| RunConfig {
+        endpoint: "db.local".to_string(),
+        port,
+        user: "u".to_string(),
+        password: Password::new("p".to_string()),
+        target_db: None,
+        except_tables: None,
+        output_format: OutputFormat::Markdown,
+        db_type,
+        database: database.map(str::to_string),
+    };
+    // 기본 포트면 기존 파일명({endpoint}) 그대로
+    assert_eq!(source_label(&config(DbType::MySql, 3306, None)), "db.local");
+    assert_eq!(
+        source_label(&config(DbType::MySql, 3309, None)),
+        "db.local_3309"
+    );
+    assert_eq!(
+        source_label(&config(DbType::Postgres, 5432, Some("app"))),
+        "db.local_app"
+    );
+    assert_eq!(
+        source_label(&config(DbType::Postgres, 55432, Some("app"))),
+        "db.local_55432_app"
+    );
 }
 
 #[test]
