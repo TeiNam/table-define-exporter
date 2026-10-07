@@ -2,7 +2,7 @@ use sqlx::mysql::MySqlPoolOptions;
 use std::collections::HashMap;
 
 use crate::{
-    db::try_get_or_warn,
+    db::{row_helpers::warn_missing_column_once, try_get_or_warn},
     error::AppError,
     identifier,
     model::{
@@ -215,8 +215,10 @@ impl MySqlClient {
     /// `information_schema.STATISTICS`에서 PRIMARY 인덱스를 제외하고 조회한다.
     pub async fn get_indexes(&self, schema: &str, table: &str) -> Result<Vec<IndexInfo>, AppError> {
         // CAST(... AS CHAR): MySQL 8.0~8.4 information_schema VARBINARY 호환
+        // CAST(non_unique AS SIGNED): 서버별로 INT/BIGINT 가 섞여 i32 디코딩이 실패하던 문제 방지
         let rows = sqlx::query(
-            "SELECT CAST(index_name AS CHAR) AS index_name, non_unique, \
+            "SELECT CAST(index_name AS CHAR) AS index_name, \
+             CAST(non_unique AS SIGNED) AS non_unique_flag, \
              CAST(GROUP_CONCAT(column_name ORDER BY seq_in_index) AS CHAR) AS index_columns \
              FROM information_schema.STATISTICS \
              WHERE table_schema = ? AND table_name = ? AND index_name != 'PRIMARY' \
@@ -238,8 +240,14 @@ impl MySqlClient {
             use sqlx::Row;
             indexes.push(IndexInfo {
                 index_name: try_get_or_warn(&row, "index_name", schema, table),
-                // non_unique는 실패 시 "Unique가 아님"(=1) 기본값으로 유지해야 과도 축소를 방지
-                non_unique: row.try_get("non_unique").unwrap_or(1),
+                // 실패 시 "Unique가 아님"(=1) 기본값 유지 — 단, 조용히 넘기지 않고 경고
+                non_unique: match row.try_get::<i64, _>("non_unique_flag") {
+                    Ok(v) => i32::from(v != 0),
+                    Err(e) => {
+                        warn_missing_column_once(schema, table, "non_unique_flag", &e);
+                        1
+                    }
+                },
                 index_columns: try_get_or_warn(&row, "index_columns", schema, table),
                 predicate: None,
             });
