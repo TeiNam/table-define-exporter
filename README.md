@@ -118,6 +118,8 @@ RUST_LOG=debug ./td-export
 
 ## 출력 파일 형식
 
+파일명의 `{endpoint}` 자리에는 같은 호스트의 다른 인스턴스·DB 출력이 서로 덮어쓰지 않도록, 포트가 기본값(3306/5432)이 아니면 `_{port}`, PostgreSQL이면 `_{database}`가 붙습니다 (예: `public(db.local_55432_mydb).md`). 파일명에 쓸 수 없는 문자(`/ \ : * ? " < > |`)는 `_`로 바뀝니다.
+
 ### Excel (`{endpoint}.xlsx`)
 
 - 스키마별 시트 생성

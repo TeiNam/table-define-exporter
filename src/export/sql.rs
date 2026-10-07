@@ -94,8 +94,9 @@ impl Exporter for SqlExporter {
         self.db_type = config.db_type;
 
         // 스키마별 .sql 파일 생성 (기존 파일 덮어쓰기)
+        let source = super::source_label(config);
         for schema in catalog.keys() {
-            let filename = super::schema_filename(schema, &config.endpoint, "sql");
+            let filename = super::schema_filename(schema, &source, "sql");
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)

@@ -15,18 +15,32 @@ pub trait Exporter {
     fn finish(&mut self) -> Result<(), AppError>;
 }
 
-/// 스키마별로 분리되는 출력 파일명: `{schema}({endpoint}).{ext}`
-pub fn schema_filename(schema: &str, endpoint: &str, ext: &str) -> String {
+/// 스키마별로 분리되는 출력 파일명: `{schema}({source}).{ext}` — `source` 는 [`source_label`]
+pub fn schema_filename(schema: &str, source: &str, ext: &str) -> String {
     format!(
         "{}({}).{ext}",
         sanitize_filename_part(schema),
-        sanitize_filename_part(endpoint)
+        sanitize_filename_part(source)
     )
 }
 
-/// 워크북(Excel) 출력 파일명: `{endpoint}.xlsx`
-pub fn workbook_filename(endpoint: &str) -> String {
-    format!("{}.xlsx", sanitize_filename_part(endpoint))
+/// 워크북(Excel) 출력 파일명: `{source}.xlsx` — `source` 는 [`source_label`]
+pub fn workbook_filename(source: &str) -> String {
+    format!("{}.xlsx", sanitize_filename_part(source))
+}
+
+/// 파일명에 쓰는 접속 대상 표기: `{endpoint}[_{port}][_{database}]`
+///
+/// 같은 호스트의 다른 인스턴스(포트)나 다른 PostgreSQL database 를 내보내도 서로
+/// 덮어쓰지 않게 구분한다. 포트는 DB 기본값(3306/5432)이 아닐 때만, database 는
+/// PostgreSQL 일 때만 붙어 기본 포트 사용 시 파일명은 `{endpoint}` 그대로다.
+pub fn source_label(config: &RunConfig) -> String {
+    let port = (config.port != config.db_type.default_port()).then(|| config.port.to_string());
+    [Some(config.endpoint.clone()), port, config.database.clone()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("_")
 }
 
 /// 파일명에 쓸 수 없는 문자(경로 구분자, Windows 예약 문자, 제어 문자)를 `_`로 바꾼다.
