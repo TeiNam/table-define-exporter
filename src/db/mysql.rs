@@ -76,10 +76,10 @@ impl MySqlClient {
                 continue;
             }
             // target_db 필터링
-            if let Some(targets) = &config.target_db {
-                if !targets.contains(&name) {
-                    continue;
-                }
+            if let Some(targets) = &config.target_db
+                && !targets.contains(&name)
+            {
+                continue;
             }
             catalog.insert(name, Vec::new());
         }

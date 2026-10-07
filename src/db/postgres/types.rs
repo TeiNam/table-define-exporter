@@ -78,17 +78,17 @@ pub fn build_pg_column_type(
     // 배열 타입: `_` 접두어 제거 후 길이/정밀도를 반영하고 `[]` 접미어 추가
     if let Some(base) = udt_name.strip_prefix('_') {
         // Req 11.1: `_varchar`/`_bpchar` 배열은 character_maximum_length가 있으면 길이를 보존
-        if matches!(base, "varchar" | "bpchar") {
-            if let Some(length) = char_max_length {
-                return format!("{base}({length})[]");
-            }
+        if matches!(base, "varchar" | "bpchar")
+            && let Some(length) = char_max_length
+        {
+            return format!("{base}({length})[]");
         }
 
         // Req 11.2: `_numeric` 배열은 precision/scale이 모두 있으면 파라미터 보존
-        if base == "numeric" {
-            if let (Some(precision), Some(scale)) = (numeric_precision, numeric_scale) {
-                return format!("numeric({precision},{scale})[]");
-            }
+        if base == "numeric"
+            && let (Some(precision), Some(scale)) = (numeric_precision, numeric_scale)
+        {
+            return format!("numeric({precision},{scale})[]");
         }
 
         // 그 외 배열: 파라미터 없이 `{base}[]`
@@ -107,10 +107,10 @@ pub fn build_pg_column_type(
     }
 
     // numeric 타입에 정밀도/스케일이 모두 지정된 경우: `numeric({p},{s})`
-    if udt_name == "numeric" {
-        if let (Some(precision), Some(scale)) = (numeric_precision, numeric_scale) {
-            return format!("numeric({precision},{scale})");
-        }
+    if udt_name == "numeric"
+        && let (Some(precision), Some(scale)) = (numeric_precision, numeric_scale)
+    {
+        return format!("numeric({precision},{scale})");
     }
 
     // 그 외: udt_name 그대로 반환
@@ -135,10 +135,10 @@ pub fn determine_pg_extra(
     }
 
     // 2. serial/bigserial 감지 (nextval 패턴)
-    if let Some(default) = column_default {
-        if default.contains("nextval(") {
-            return Some("auto_increment".to_string());
-        }
+    if let Some(default) = column_default
+        && default.contains("nextval(")
+    {
+        return Some("auto_increment".to_string());
     }
 
     // 3. generated 컬럼 감지 (STORED만 지원, PG 13~17)
