@@ -535,6 +535,7 @@ proptest! {
                     non_unique: 1,
                     index_columns: format!("col{}", i),
                     predicate: None,
+                    index_type: None,
                 });
             }
             // 제약 추가
@@ -754,6 +755,7 @@ fn base_table_bytes_unchanged_after_view_fence_fix() {
             non_unique: 1,
             index_columns: "id".to_string(),
             predicate: None,
+            index_type: None,
         }],
         constraints: vec![ConstInfo {
             constraint_name: "fk_user".to_string(),

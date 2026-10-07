@@ -54,6 +54,7 @@ fn make_table_with_index_predicate(predicate: Option<String>) -> TableDef {
             non_unique: 1,
             index_columns: "id".to_string(),
             predicate,
+            index_type: None,
         }],
         constraints: vec![],
         view: None,
@@ -205,5 +206,33 @@ fn markdown_omits_where_clause_when_predicate_none() {
     assert!(
         !output.contains(" WHERE "),
         "predicate=None인데 Markdown 출력에 \" WHERE \"가 포함됨:\n{output}"
+    );
+}
+
+/// FULLTEXT/SPATIAL 인덱스는 Normal 이 아니라 종류 그대로 표시되고, 컬럼 표기(DESC 등)는 보존된다.
+#[test]
+fn markdown_shows_index_kind_and_column_modifiers() {
+    let mut table = make_table_with_index_predicate(None);
+    table.indexes = vec![
+        IndexInfo {
+            index_name: "ft_body".to_string(),
+            non_unique: 1,
+            index_columns: "body".to_string(),
+            predicate: None,
+            index_type: Some("FULLTEXT".to_string()),
+        },
+        IndexInfo {
+            index_name: "idx_recent".to_string(),
+            non_unique: 1,
+            index_columns: "user_id,created_at DESC".to_string(),
+            predicate: None,
+            index_type: Some("BTREE".to_string()),
+        },
+    ];
+    let output = render_markdown_to_string("testschema", &[table]);
+    assert!(output.contains("- [Fulltext]ft_body(body)"), "{output}");
+    assert!(
+        output.contains("- [Normal]idx_recent(user_id,created_at DESC)"),
+        "{output}"
     );
 }

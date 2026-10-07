@@ -936,7 +936,7 @@ fn parse_indexdef_with_desc_modifier() {
     let indexdef = "CREATE INDEX idx_created ON public.events USING btree (created_at DESC)";
     let parsed = parse_pg_indexdef(indexdef);
     assert!(!parsed.is_unique);
-    assert_eq!(parsed.columns, "created_at");
+    assert_eq!(parsed.columns, "created_at DESC");
     assert!(parsed.predicate.is_none());
 }
 
@@ -955,7 +955,7 @@ fn parse_indexdef_with_nulls_first_last() {
         "CREATE INDEX idx_priority ON public.tasks USING btree (priority DESC NULLS LAST)";
     let parsed = parse_pg_indexdef(indexdef);
     assert!(!parsed.is_unique);
-    assert_eq!(parsed.columns, "priority");
+    assert_eq!(parsed.columns, "priority DESC NULLS LAST");
     assert!(parsed.predicate.is_none());
 }
 
@@ -965,7 +965,7 @@ fn parse_indexdef_multi_columns_with_modifiers() {
                     USING btree (category ASC, created_at DESC NULLS FIRST)";
     let parsed = parse_pg_indexdef(indexdef);
     assert!(parsed.is_unique);
-    assert_eq!(parsed.columns, "category, created_at");
+    assert_eq!(parsed.columns, "category, created_at DESC NULLS FIRST");
     assert!(parsed.predicate.is_none());
 }
 

@@ -219,12 +219,8 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
                 row += 1;
 
                 for idx in &t.indexes {
-                    let idx_type = if idx.non_unique == 1 {
-                        "Normal Index"
-                    } else {
-                        "Unique Index"
-                    };
-                    ws.merge_range(row, 0, row, 1, idx_type, &Format::new())?;
+                    let idx_type = format!("{} Index", idx.kind_label());
+                    ws.merge_range(row, 0, row, 1, &idx_type, &Format::new())?;
                     ws.merge_range(row, 2, row, 5, idx.index_name.as_str(), &Format::new())?;
                     // 파셜 인덱스(partial index): predicate가 존재하면 컬럼 뒤에 " WHERE <predicate>" 추가
                     let columns_cell = if let Some(pred) = &idx.predicate {
