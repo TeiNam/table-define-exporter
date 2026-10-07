@@ -16,7 +16,8 @@ mod types;
 pub use ddl::build_pg_ddl_from_metadata;
 pub use parse::{ParsedIndex, parse_pg_indexdef};
 pub use types::{
-    PgConstraintType, PgDdlColumn, PgDdlConstraint, build_pg_column_type, determine_pg_extra,
+    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, build_pg_column_type,
+    determine_pg_extra,
 };
 
 /// PostgreSQL 시스템 스키마 목록 (정적 매칭 대상)

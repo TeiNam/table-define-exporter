@@ -20,8 +20,28 @@ pub struct PgDdlColumn {
     pub is_nullable: bool,
     /// 기본값 (예: "0", "'hello'", "nextval('seq'::regclass)")
     pub default_value: Option<String>,
-    /// STORED generated 컬럼의 표현식 (예: "col1 + col2")
-    pub generated_expression: Option<String>,
+    /// generated 컬럼이면 종류와 표현식
+    pub generated: Option<PgGenerated>,
+}
+
+/// generated 컬럼 종류 (`pg_attribute.attgenerated`)
+#[derive(Debug, Clone)]
+pub enum PgGenerated {
+    /// `'s'` — `GENERATED ALWAYS AS (expr) STORED`
+    Stored(String),
+    /// `'v'` — `GENERATED ALWAYS AS (expr) VIRTUAL` (PG 18+, STORED 생략 시 기본값)
+    Virtual(String),
+}
+
+impl PgGenerated {
+    /// `attgenerated` 코드와 표현식으로 생성한다. generated 컬럼이 아니면 `None`.
+    pub fn from_catalog(attgenerated: &str, expression: Option<String>) -> Option<Self> {
+        match (attgenerated, expression) {
+            ("s", Some(expr)) => Some(Self::Stored(expr)),
+            ("v", Some(expr)) => Some(Self::Virtual(expr)),
+            _ => None,
+        }
+    }
 }
 
 /// DDL 재구성용 제약 조건 종류
@@ -122,7 +142,7 @@ pub fn build_pg_column_type(
 /// 우선순위:
 /// 1. `attidentity`가 `'a'`(ALWAYS) 또는 `'d'`(BY DEFAULT) → `auto_increment`
 /// 2. `column_default`에 `nextval(` 포함 (serial/bigserial) → `auto_increment`
-/// 3. `attgenerated`가 `'s'`(STORED) → `STORED GENERATED`
+/// 3. `attgenerated`가 `'s'`(STORED) → `STORED GENERATED`, `'v'`(VIRTUAL, PG 18+) → `VIRTUAL GENERATED`
 /// 4. 그 외 → `None`
 pub fn determine_pg_extra(
     attidentity: &str,
@@ -141,9 +161,11 @@ pub fn determine_pg_extra(
         return Some("auto_increment".to_string());
     }
 
-    // 3. generated 컬럼 감지 (STORED만 지원, PG 13~17)
-    if attgenerated == "s" {
-        return Some("STORED GENERATED".to_string());
+    // 3. generated 컬럼 감지 (MySQL extra 표기와 동일하게 맞춘다)
+    match attgenerated {
+        "s" => return Some("STORED GENERATED".to_string()),
+        "v" => return Some("VIRTUAL GENERATED".to_string()),
+        _ => {}
     }
 
     // 4. 해당 없음

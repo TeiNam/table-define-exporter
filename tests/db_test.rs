@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 use td_export::db::postgres::{
-    ParsedIndex, PgConstraintType, PgDdlColumn, PgDdlConstraint, build_pg_column_type,
+    ParsedIndex, PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, build_pg_column_type,
     build_pg_ddl_from_metadata, determine_pg_extra, filter_pg_schemas, is_pg_system_schema,
     parse_pg_indexdef,
 };
@@ -580,6 +580,29 @@ fn determine_pg_extra_generated_stored() {
 }
 
 #[test]
+fn determine_pg_extra_generated_virtual() {
+    // PG 18: STORED 를 생략한 generated 컬럼은 VIRTUAL (attgenerated = 'v')
+    assert_eq!(
+        determine_pg_extra("", "v", None),
+        Some("VIRTUAL GENERATED".to_string())
+    );
+}
+
+#[test]
+fn pg_generated_from_catalog() {
+    assert!(matches!(
+        PgGenerated::from_catalog("s", Some("(a * 2)".into())),
+        Some(PgGenerated::Stored(e)) if e == "(a * 2)"
+    ));
+    assert!(matches!(
+        PgGenerated::from_catalog("v", Some("(a + 1)".into())),
+        Some(PgGenerated::Virtual(e)) if e == "(a + 1)"
+    ));
+    assert!(PgGenerated::from_catalog("", None).is_none());
+    assert!(PgGenerated::from_catalog("v", None).is_none());
+}
+
+#[test]
 fn determine_pg_extra_none() {
     assert_eq!(determine_pg_extra("", "", None), None);
     assert_eq!(determine_pg_extra("", "", Some("'default_value'")), None);
@@ -1124,14 +1147,14 @@ fn ddl_basic_table_with_columns() {
             data_type: "integer".to_string(),
             is_nullable: false,
             default_value: None,
-            generated_expression: None,
+            generated: None,
         },
         PgDdlColumn {
             name: "name".to_string(),
             data_type: "varchar(100)".to_string(),
             is_nullable: true,
             default_value: None,
-            generated_expression: None,
+            generated: None,
         },
     ];
     let ddl = build_pg_ddl_from_metadata("public", "users", &columns, &[], &[]).unwrap();
@@ -1149,7 +1172,7 @@ fn ddl_with_default_value() {
         data_type: "bool".to_string(),
         is_nullable: false,
         default_value: Some("true".to_string()),
-        generated_expression: None,
+        generated: None,
     }];
     let ddl = build_pg_ddl_from_metadata("public", "flags", &columns, &[], &[]).unwrap();
     assert!(ddl.contains("DEFAULT true"));
@@ -1163,14 +1186,14 @@ fn ddl_with_generated_column() {
             data_type: "integer".to_string(),
             is_nullable: false,
             default_value: None,
-            generated_expression: None,
+            generated: None,
         },
         PgDdlColumn {
             name: "b".to_string(),
             data_type: "integer".to_string(),
             is_nullable: true,
             default_value: None,
-            generated_expression: Some("a * 2".to_string()),
+            generated: Some(PgGenerated::Stored("a * 2".to_string())),
         },
     ];
     let ddl = build_pg_ddl_from_metadata("public", "calc", &columns, &[], &[]).unwrap();
@@ -1180,13 +1203,27 @@ fn ddl_with_generated_column() {
 }
 
 #[test]
+fn ddl_with_virtual_generated_column() {
+    let columns = vec![PgDdlColumn {
+        name: "c".to_string(),
+        data_type: "integer".to_string(),
+        is_nullable: true,
+        default_value: None,
+        generated: Some(PgGenerated::Virtual("a + 1".to_string())),
+    }];
+    let ddl = build_pg_ddl_from_metadata("public", "calc", &columns, &[], &[]).unwrap();
+    assert!(ddl.contains("\"c\" integer GENERATED ALWAYS AS (a + 1) VIRTUAL"));
+    assert!(!ddl.contains("STORED"));
+}
+
+#[test]
 fn ddl_with_primary_key() {
     let columns = vec![PgDdlColumn {
         name: "id".to_string(),
         data_type: "integer".to_string(),
         is_nullable: false,
         default_value: None,
-        generated_expression: None,
+        generated: None,
     }];
     let constraints = vec![PgDdlConstraint {
         name: "users_pkey".to_string(),
@@ -1204,7 +1241,7 @@ fn ddl_with_unique_constraint() {
         data_type: "varchar(255)".to_string(),
         is_nullable: false,
         default_value: None,
-        generated_expression: None,
+        generated: None,
     }];
     let constraints = vec![PgDdlConstraint {
         name: "users_email_key".to_string(),
@@ -1222,7 +1259,7 @@ fn ddl_with_foreign_key() {
         data_type: "integer".to_string(),
         is_nullable: false,
         default_value: None,
-        generated_expression: None,
+        generated: None,
     }];
     let constraints = vec![PgDdlConstraint {
         name: "orders_user_fk".to_string(),
@@ -1254,21 +1291,21 @@ fn ddl_with_multiple_fks_reference_names_resolved() {
             data_type: "integer".to_string(),
             is_nullable: false,
             default_value: None,
-            generated_expression: None,
+            generated: None,
         },
         PgDdlColumn {
             name: "user_id".to_string(),
             data_type: "integer".to_string(),
             is_nullable: false,
             default_value: None,
-            generated_expression: None,
+            generated: None,
         },
         PgDdlColumn {
             name: "product_id".to_string(),
             data_type: "integer".to_string(),
             is_nullable: true,
             default_value: None,
-            generated_expression: None,
+            generated: None,
         },
     ];
     let constraints = vec![
@@ -1333,7 +1370,7 @@ fn ddl_with_check_constraint() {
         data_type: "integer".to_string(),
         is_nullable: false,
         default_value: None,
-        generated_expression: None,
+        generated: None,
     }];
     let constraints = vec![PgDdlConstraint {
         name: "users_age_check".to_string(),
@@ -1353,7 +1390,7 @@ fn ddl_with_indexes() {
         data_type: "text".to_string(),
         is_nullable: true,
         default_value: None,
-        generated_expression: None,
+        generated: None,
     }];
     let index_defs = vec!["CREATE INDEX idx_name ON public.users USING btree (name)".to_string()];
     let ddl = build_pg_ddl_from_metadata("public", "users", &columns, &[], &index_defs).unwrap();
@@ -1369,7 +1406,7 @@ fn ddl_constraint_ordering_pk_uq_fk_ck() {
         data_type: "integer".to_string(),
         is_nullable: false,
         default_value: None,
-        generated_expression: None,
+        generated: None,
     }];
     let constraints = vec![
         PgDdlConstraint {
@@ -1432,7 +1469,7 @@ fn pg_ddl_column_strategy() -> impl Strategy<Value = PgDdlColumn> {
                 data_type,
                 is_nullable,
                 default_value,
-                generated_expression: None,
+                generated: None,
             },
         )
 }

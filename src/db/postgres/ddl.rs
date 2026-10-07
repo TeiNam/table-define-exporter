@@ -7,7 +7,9 @@
 use crate::{error::AppError, identifier::quote_pg_identifier};
 
 use super::parse::{extract_check_expression, parse_fk_actions_from_condef, quote_column_list};
-use super::types::{PgConstraintType, PgDdlColumn, PgDdlConstraint, build_pg_column_type};
+use super::types::{
+    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, build_pg_column_type,
+};
 use crate::db::try_get_or_warn;
 
 /// 테이블 메타데이터로부터 PostgreSQL DDL 문자열을 재구성한다.
@@ -18,7 +20,7 @@ use crate::db::try_get_or_warn;
 /// DDL 구조:
 /// ```sql
 /// CREATE TABLE "schema"."table" (
-///     "col" type [NOT NULL] [DEFAULT default] [GENERATED ALWAYS AS (expr) STORED],
+///     "col" type [NOT NULL] [DEFAULT default] [GENERATED ALWAYS AS (expr) STORED|VIRTUAL],
 ///     CONSTRAINT "pk" PRIMARY KEY (columns),
 ///     CONSTRAINT "uq" UNIQUE (columns),
 ///     CONSTRAINT "fk" FOREIGN KEY (cols) REFERENCES "ref" (ref_cols) ...
@@ -52,12 +54,20 @@ pub fn build_pg_ddl_from_metadata(
             col_def.push_str(" NOT NULL");
         }
 
-        // GENERATED ALWAYS AS (...) STORED (기본값보다 우선)
-        if let Some(ref expr) = col.generated_expression {
-            col_def.push_str(&format!(" GENERATED ALWAYS AS ({expr}) STORED"));
-        } else if let Some(ref default) = col.default_value {
+        // GENERATED ALWAYS AS (...) STORED|VIRTUAL (기본값보다 우선)
+        match &col.generated {
+            Some(PgGenerated::Stored(expr)) => {
+                col_def.push_str(&format!(" GENERATED ALWAYS AS ({expr}) STORED"));
+            }
+            Some(PgGenerated::Virtual(expr)) => {
+                col_def.push_str(&format!(" GENERATED ALWAYS AS ({expr}) VIRTUAL"));
+            }
             // DEFAULT 값 (generated 컬럼이 아닌 경우에만)
-            col_def.push_str(&format!(" DEFAULT {default}"));
+            None => {
+                if let Some(default) = &col.default_value {
+                    col_def.push_str(&format!(" DEFAULT {default}"));
+                }
+            }
         }
 
         entries.push(col_def);
@@ -197,19 +207,12 @@ pub(super) async fn fetch_table_ddl(
         let data_type =
             build_pg_column_type(&udt_name, char_max_length, numeric_precision, numeric_scale);
 
-        // STORED generated 컬럼 감지
-        let generated_expression = if attgenerated == "s" {
-            generation_expression
-        } else {
-            None
-        };
-
         ddl_columns.push(PgDdlColumn {
             name: column_name,
             data_type,
             is_nullable: is_nullable == "YES",
             default_value: column_default,
-            generated_expression,
+            generated: PgGenerated::from_catalog(&attgenerated, generation_expression),
         });
     }
 
