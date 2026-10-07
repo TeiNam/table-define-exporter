@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use rust_xlsxwriter::{Format, FormatBorder, Workbook, Worksheet, XlsxError};
 
 use crate::{
@@ -57,11 +59,11 @@ impl Exporter for ExcelExporter {
         self.schemas = catalog.keys().cloned().collect();
         self.schemas.sort(); // 일관된 순서 보장
 
-        // 스키마별 시트 추가
-        for schema in &self.schemas {
+        // 스키마별 시트 추가 (시트 순서 = self.schemas 순서)
+        for sheet in sheet_names(&self.schemas) {
             self.workbook
                 .add_worksheet()
-                .set_name(schema)
+                .set_name(&sheet)
                 .map_err(|e| AppError::ExcelWrite(e.to_string()))?;
         }
 
@@ -89,6 +91,56 @@ impl Exporter for ExcelExporter {
             .save(&self.filename)
             .map_err(|e| AppError::ExcelWrite(e.to_string()))
     }
+}
+
+/// Excel 시트 이름 최대 길이
+const MAX_SHEET_NAME_CHARS: usize = 31;
+
+/// 스키마명 목록을 Excel 시트 이름 규칙에 맞게 바꾼다 (입력 순서 유지).
+///
+/// 규칙: 31자 이하, `* ? : [ ] \ /` 금지, 앞뒤 `'` 금지, 대소문자 무시 중복 금지.
+/// 스키마명은 63자(PG)/64자(MySQL)까지 가능하고 대소문자만 다른 스키마도 있을 수 있어,
+/// 그대로 쓰면 워크북 생성이 통째로 실패한다. 중복은 `~2`, `~3` 접미어로 구분한다.
+fn sheet_names(schemas: &[String]) -> Vec<String> {
+    let mut used = HashSet::new();
+    schemas
+        .iter()
+        .map(|schema| {
+            let mut name = sanitize_sheet_name(schema, MAX_SHEET_NAME_CHARS);
+            let mut n = 2;
+            while !used.insert(name.to_lowercase()) {
+                let suffix = format!("~{n}");
+                name = sanitize_sheet_name(schema, MAX_SHEET_NAME_CHARS - suffix.len()) + &suffix;
+                n += 1;
+            }
+            if name != *schema {
+                tracing::warn!("Excel 시트 이름 규칙에 맞춰 변경: {schema} -> {name}");
+            }
+            name
+        })
+        .collect()
+}
+
+/// 금지 문자를 `_`로 바꾸고 `max_chars`로 자른 뒤 앞뒤 `'`를 `_`로 바꾼다.
+fn sanitize_sheet_name(name: &str, max_chars: usize) -> String {
+    let mut chars: Vec<char> = name
+        .chars()
+        .map(|c| match c {
+            '*' | '?' | ':' | '[' | ']' | '\\' | '/' => '_',
+            c => c,
+        })
+        .take(max_chars)
+        .collect();
+    if chars.is_empty() {
+        chars.push('_');
+    }
+    let last = chars.len() - 1;
+    for i in [0, last] {
+        if chars[i] == '\'' {
+            chars[i] = '_';
+        }
+    }
+    chars.into_iter().collect()
 }
 
 /// 워크시트에 테이블 데이터를 기록하는 내부 함수
@@ -274,4 +326,59 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use rust_xlsxwriter::utility::check_sheet_name;
+
+    fn names(schemas: &[&str]) -> Vec<String> {
+        sheet_names(&schemas.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn sheet_names_keep_valid_names() {
+        assert_eq!(names(&["app", "english-note"]), ["app", "english-note"]);
+    }
+
+    #[test]
+    fn sheet_names_fix_invalid_names() {
+        let long = "a_very_long_schema_name_exceeding_31_chars";
+        assert_eq!(
+            names(&[
+                "x/y",
+                "'quoted'",
+                long,
+                &format!("{long}_2"),
+                "Sales",
+                "sales"
+            ]),
+            [
+                "x_y",
+                "_quoted_",
+                "a_very_long_schema_name_exceedi",
+                "a_very_long_schema_name_excee~2",
+                "Sales",
+                "sales~2",
+            ]
+        );
+    }
+
+    proptest! {
+        /// 어떤 스키마명 조합이 와도 Excel 이 받아들이는 고유한 시트 이름이 나온다.
+        #[test]
+        fn sheet_names_are_always_valid_and_unique(
+            schemas in proptest::collection::vec("\\PC{0,40}", 0..8),
+        ) {
+            let out = sheet_names(&schemas);
+            prop_assert_eq!(out.len(), schemas.len());
+            let mut seen = HashSet::new();
+            for name in &out {
+                prop_assert!(check_sheet_name(name).is_ok(), "invalid: {:?}", name);
+                prop_assert!(seen.insert(name.to_lowercase()), "duplicate: {:?}", name);
+            }
+        }
+    }
 }
