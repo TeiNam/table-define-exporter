@@ -147,7 +147,16 @@ fn write_sql(
 
     // 데이터베이스 헤더 주석
     writeln!(file, "/* Database : {} */", schema)?;
+    // MySQL: FK 가 뒤에 나오는 테이블을 참조해도 실행되도록 검사를 잠시 끈다 (mysqldump 와 동일)
+    if db_type == DbType::MySql {
+        writeln!(
+            file,
+            "SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n"
+        )?;
+    }
 
+    // 모든 테이블을 만든 뒤 실행할 문장 (PostgreSQL FK)
+    let mut deferred: Vec<&str> = Vec::new();
     for t in tables {
         // Req 2.5, 14.3: 위험 식별자를 포함한 테이블은 출력에서 스킵한다 (DROP은 더 이상
         // 출력하지 않지만, 주석/DDL에 위험 식별자가 새는 것을 막기 위해 검증은 유지).
@@ -166,6 +175,19 @@ fn write_sql(
         // CREATE DDL만 출력 — DROP 구문은 제외. 원본을 보존하되 Terminator로 정확히 하나의 `;` 종결
         let ddl = t.ddl.as_deref().unwrap_or("");
         writeln!(file, "{}\n\n", terminator.apply(ddl))?;
+        deferred.extend(t.ddl_after.iter().map(String::as_str));
+    }
+
+    // FK 는 참조 대상 테이블이 모두 만들어진 뒤 추가 (pg_dump 와 동일)
+    if !deferred.is_empty() {
+        writeln!(file, "/* Foreign Keys */")?;
+        for statement in deferred {
+            writeln!(file, "{statement}")?;
+        }
+        writeln!(file)?;
+    }
+    if db_type == DbType::MySql {
+        writeln!(file, "SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;")?;
     }
 
     Ok(())
@@ -174,6 +196,64 @@ fn write_sql(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render(db_type: DbType, tables: &[TableDef]) -> String {
+        use std::io::{Read, Seek};
+        let mut file = tempfile::tempfile().unwrap();
+        write_sql(&mut file, "s", tables, db_type).unwrap();
+        file.rewind().unwrap();
+        let mut out = String::new();
+        file.read_to_string(&mut out).unwrap();
+        out
+    }
+
+    fn table(name: &str, create: &str, after: &[&str]) -> TableDef {
+        TableDef {
+            table_name: name.to_string(),
+            ddl: Some(create.to_string()),
+            ddl_after: after.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn postgres_foreign_keys_come_after_all_tables() {
+        let out = render(
+            DbType::Postgres,
+            &[
+                table(
+                    "child",
+                    "CREATE TABLE child (x int)",
+                    &["ALTER TABLE child ADD FK;"],
+                ),
+                table("parent", "CREATE TABLE parent (a int)", &[]),
+            ],
+        );
+        let fk = out.find("ALTER TABLE child ADD FK;").unwrap();
+        assert!(out.find("CREATE TABLE parent").unwrap() < fk, "{out}");
+        assert!(
+            out.contains("/* Foreign Keys */\nALTER TABLE child ADD FK;\n"),
+            "{out}"
+        );
+        assert!(!out.contains("FOREIGN_KEY_CHECKS"), "{out}");
+    }
+
+    #[test]
+    fn mysql_disables_and_restores_foreign_key_checks() {
+        let out = render(
+            DbType::MySql,
+            &[table("child", "CREATE TABLE child (x int)", &[])],
+        );
+        let off = out
+            .find("SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;")
+            .unwrap();
+        let create = out.find("CREATE TABLE child").unwrap();
+        let restore = out
+            .find("SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;")
+            .unwrap();
+        assert!(off < create && create < restore, "{out}");
+        assert!(!out.contains("/* Foreign Keys */"), "{out}");
+    }
 
     #[test]
     fn terminator_adds_semicolon_when_absent() {

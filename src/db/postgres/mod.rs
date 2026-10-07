@@ -5,8 +5,8 @@ use crate::{
     db::try_get_or_warn,
     error::AppError,
     model::{
-        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDef,
-        ViewInfo, fk_reference,
+        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDdl,
+        TableDef, ViewInfo, fk_reference,
     },
 };
 
@@ -14,7 +14,7 @@ mod ddl;
 mod parse;
 mod types;
 
-pub use ddl::{build_pg_ddl_from_metadata, build_pg_view_ddl};
+pub use ddl::{build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_view_ddl};
 pub use parse::{ParsedIndex, parse_pg_indexdef};
 pub use types::{
     PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, build_pg_column_type,
@@ -487,7 +487,7 @@ impl PgClient {
     /// `information_schema.columns` + `pg_catalog.pg_constraint` + `pg_get_indexdef()`를
     /// 조합하여 CREATE TABLE DDL 문자열을 재구성한다.
     /// PostgreSQL에는 `pg_get_tabledef()` 내장 함수가 없으므로 직접 재구성한다.
-    pub async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<String, AppError> {
+    pub async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<TableDdl, AppError> {
         ddl::fetch_table_ddl(&self.pool, schema, table).await
     }
 }

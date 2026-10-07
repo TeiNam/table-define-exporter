@@ -4,7 +4,7 @@
 //! `fetch_table_ddl` — `PgPool`에서 컬럼/제약/인덱스 메타데이터를 조회한 뒤
 //! `build_pg_ddl_from_metadata`에 위임하는 async 헬퍼.
 
-use crate::{error::AppError, identifier::quote_pg_identifier};
+use crate::{error::AppError, identifier::quote_pg_identifier, model::TableDdl};
 
 use super::parse::{extract_check_expression, parse_fk_options, quote_column_list};
 use super::types::{
@@ -24,12 +24,12 @@ use crate::db::try_get_or_warn;
 ///         [DEFAULT default] [GENERATED ALWAYS AS (expr) STORED|VIRTUAL],
 ///     CONSTRAINT "pk" PRIMARY KEY (columns),
 ///     CONSTRAINT "uq" UNIQUE (columns),
-///     CONSTRAINT "fk" FOREIGN KEY (cols) REFERENCES "ref" (ref_cols) ...
 ///     CONSTRAINT "ck" CHECK (expression)
 /// );
 /// -- 인덱스
 /// indexdef;
 /// ```
+/// FK 는 여기에 넣지 않는다 — [`build_pg_fk_ddl`] 로 따로 만든다.
 pub fn build_pg_ddl_from_metadata(
     schema: &str,
     table: &str,
@@ -79,7 +79,7 @@ pub fn build_pg_ddl_from_metadata(
         entries.push(col_def);
     }
 
-    // 제약 조건 추가 (PK → UQ → FK → CK 순서)
+    // 제약 조건 추가 (PK → UQ → CK 순서, FK 는 build_pg_fk_ddl)
     for c in constraints
         .iter()
         .filter(|c| matches!(c.constraint_type, PgConstraintType::PrimaryKey))
@@ -96,42 +96,6 @@ pub fn build_pg_ddl_from_metadata(
         let quoted_name = quote_pg_identifier(&c.name)?;
         let cols = quote_column_list(&c.columns)?;
         entries.push(format!("    CONSTRAINT {quoted_name} UNIQUE ({cols})"));
-    }
-
-    for c in constraints
-        .iter()
-        .filter(|c| matches!(c.constraint_type, PgConstraintType::ForeignKey { .. }))
-    {
-        if let PgConstraintType::ForeignKey {
-            ref ref_schema,
-            ref ref_table,
-            ref ref_columns,
-            ref on_delete,
-            ref on_update,
-            ref match_type,
-            ref deferrable,
-        } = c.constraint_type
-        {
-            let quoted_name = quote_pg_identifier(&c.name)?;
-            let local_cols = quote_column_list(&c.columns)?;
-            let quoted_ref_schema = quote_pg_identifier(ref_schema)?;
-            let quoted_ref_table = quote_pg_identifier(ref_table)?;
-            let ref_cols = quote_column_list(ref_columns)?;
-            // 문법 순서: REFERENCES .. [MATCH x] [ON DELETE] [ON UPDATE] [DEFERRABLE ..]
-            let match_clause = match_type
-                .as_deref()
-                .map(|m| format!(" MATCH {m}"))
-                .unwrap_or_default();
-            let deferrable_clause = deferrable
-                .as_deref()
-                .map(|d| format!(" {d}"))
-                .unwrap_or_default();
-            entries.push(format!(
-                "    CONSTRAINT {quoted_name} FOREIGN KEY ({local_cols}) \
-                 REFERENCES {quoted_ref_schema}.{quoted_ref_table} ({ref_cols}){match_clause} \
-                 ON DELETE {on_delete} ON UPDATE {on_update}{deferrable_clause}"
-            ));
-        }
     }
 
     for c in constraints
@@ -156,6 +120,55 @@ pub fn build_pg_ddl_from_metadata(
     Ok(ddl)
 }
 
+/// FK 제약 조건을 `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ...;` 문장으로 만든다.
+///
+/// FK 를 CREATE TABLE 안에 두면 참조 테이블이 먼저 있어야 해서, 테이블명 순으로 출력한
+/// SQL 파일을 그대로 실행할 수 없다. pg_dump 처럼 모든 테이블을 만든 뒤 추가한다.
+pub fn build_pg_fk_ddl(
+    schema: &str,
+    table: &str,
+    constraints: &[PgDdlConstraint],
+) -> Result<Vec<String>, AppError> {
+    let quoted_schema = quote_pg_identifier(schema)?;
+    let quoted_table = quote_pg_identifier(table)?;
+    let mut statements = Vec::new();
+    for c in constraints {
+        let PgConstraintType::ForeignKey {
+            ref_schema,
+            ref_table,
+            ref_columns,
+            on_delete,
+            on_update,
+            match_type,
+            deferrable,
+        } = &c.constraint_type
+        else {
+            continue;
+        };
+        let quoted_name = quote_pg_identifier(&c.name)?;
+        let local_cols = quote_column_list(&c.columns)?;
+        let quoted_ref_schema = quote_pg_identifier(ref_schema)?;
+        let quoted_ref_table = quote_pg_identifier(ref_table)?;
+        let ref_cols = quote_column_list(ref_columns)?;
+        // 문법 순서: REFERENCES .. [MATCH x] [ON DELETE] [ON UPDATE] [DEFERRABLE ..]
+        let match_clause = match_type
+            .as_deref()
+            .map(|m| format!(" MATCH {m}"))
+            .unwrap_or_default();
+        let deferrable_clause = deferrable
+            .as_deref()
+            .map(|d| format!(" {d}"))
+            .unwrap_or_default();
+        statements.push(format!(
+            "ALTER TABLE {quoted_schema}.{quoted_table} ADD CONSTRAINT {quoted_name} \
+             FOREIGN KEY ({local_cols}) \
+             REFERENCES {quoted_ref_schema}.{quoted_ref_table} ({ref_cols}){match_clause} \
+             ON DELETE {on_delete} ON UPDATE {on_update}{deferrable_clause};"
+        ));
+    }
+    Ok(statements)
+}
+
 /// 뷰 정의(`pg_get_viewdef` 결과)로 `CREATE VIEW "schema"."view" AS ...;` 를 만든다.
 pub fn build_pg_view_ddl(schema: &str, view: &str, definition: &str) -> Result<String, AppError> {
     let quoted_schema = quote_pg_identifier(schema)?;
@@ -178,7 +191,7 @@ pub(super) async fn fetch_table_ddl(
     pool: &sqlx::PgPool,
     schema: &str,
     table: &str,
-) -> Result<String, AppError> {
+) -> Result<TableDdl, AppError> {
     // 0. 뷰면 CREATE VIEW 로 출력 (컬럼으로 재구성하면 빈 CREATE TABLE 이 된다)
     let view_def: Option<String> = sqlx::query_scalar(
         "SELECT pg_get_viewdef(c.oid, true) \
@@ -196,7 +209,10 @@ pub(super) async fn fetch_table_ddl(
         source: e,
     })?;
     if let Some(definition) = view_def {
-        return build_pg_view_ddl(schema, table, &definition);
+        return Ok(TableDdl {
+            create: build_pg_view_ddl(schema, table, &definition)?,
+            after: Vec::new(),
+        });
     }
 
     // 1. 컬럼 정보 조회 (ordinal_position 순)
@@ -309,7 +325,16 @@ pub(super) async fn fetch_table_ddl(
         .collect();
 
     // 4. DDL 재구성
-    build_pg_ddl_from_metadata(schema, table, &ddl_columns, &ddl_constraints, &index_defs)
+    Ok(TableDdl {
+        create: build_pg_ddl_from_metadata(
+            schema,
+            table,
+            &ddl_columns,
+            &ddl_constraints,
+            &index_defs,
+        )?,
+        after: build_pg_fk_ddl(schema, table, &ddl_constraints)?,
+    })
 }
 
 /// 테이블의 PK/UNIQUE/FK/CHECK 제약 조건을 `pg_constraint` 에서 조회한다 (정의 순서 보존).

@@ -58,6 +58,7 @@ fn make_table_with_index_predicate(predicate: Option<String>) -> TableDef {
         }],
         constraints: vec![],
         view: None,
+        ddl_after: Vec::new(),
         ddl: Some("CREATE TABLE users (id int);".to_string()),
     }
 }
