@@ -16,7 +16,7 @@ mod types;
 pub use ddl::build_pg_ddl_from_metadata;
 pub use parse::{ParsedIndex, parse_pg_indexdef};
 pub use types::{
-    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, build_pg_column_type,
+    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, build_pg_column_type,
     determine_pg_extra,
 };
 

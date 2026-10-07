@@ -22,6 +22,55 @@ pub struct PgDdlColumn {
     pub default_value: Option<String>,
     /// generated 컬럼이면 종류와 표현식
     pub generated: Option<PgGenerated>,
+    /// identity 컬럼이면 종류와 시퀀스 시작값/증가값
+    pub identity: Option<PgIdentity>,
+}
+
+/// identity 컬럼 (`pg_attribute.attidentity`)
+#[derive(Debug, Clone, PartialEq)]
+pub struct PgIdentity {
+    /// `'a'` → `ALWAYS`, `'d'` → `BY DEFAULT`
+    pub always: bool,
+    /// 시퀀스 `START WITH`
+    pub start: i64,
+    /// 시퀀스 `INCREMENT BY`
+    pub increment: i64,
+}
+
+impl PgIdentity {
+    /// `attidentity` 코드와 시퀀스 값으로 생성한다. identity 컬럼이 아니면 `None`.
+    pub fn from_catalog(
+        attidentity: &str,
+        start: Option<i64>,
+        increment: Option<i64>,
+    ) -> Option<Self> {
+        let always = match attidentity {
+            "a" => true,
+            "d" => false,
+            _ => return None,
+        };
+        Some(Self {
+            always,
+            start: start.unwrap_or(1),
+            increment: increment.unwrap_or(1),
+        })
+    }
+
+    /// 컬럼 정의 뒤에 붙는 ` GENERATED {ALWAYS|BY DEFAULT} AS IDENTITY [(START WITH n INCREMENT BY m)]`.
+    // ponytail: START WITH/INCREMENT BY 만 보존 — MINVALUE/MAXVALUE/CACHE/CYCLE 은 생략.
+    // 바꿔 쓰는 스키마가 생기면 pg_sequence 의 나머지 컬럼도 같은 방식으로 추가.
+    pub fn to_sql(&self) -> String {
+        let kind = if self.always { "ALWAYS" } else { "BY DEFAULT" };
+        let options = if (self.start, self.increment) == (1, 1) {
+            String::new()
+        } else {
+            format!(
+                " (START WITH {} INCREMENT BY {})",
+                self.start, self.increment
+            )
+        };
+        format!(" GENERATED {kind} AS IDENTITY{options}")
+    }
 }
 
 /// generated 컬럼 종류 (`pg_attribute.attgenerated`)
