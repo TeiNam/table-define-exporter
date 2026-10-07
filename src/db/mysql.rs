@@ -13,6 +13,9 @@ use crate::{
 /// MySQL 전용 DB 클라이언트
 pub struct MySqlClient {
     pool: sqlx::MySqlPool,
+    /// `information_schema.STATISTICS.EXPRESSION`(함수형 인덱스 식) 존재 여부.
+    /// MySQL 8.0.13+ 에만 있고 5.7·MariaDB 에는 없다.
+    has_index_expression: bool,
 }
 
 const SYSTEM_SCHEMAS: &[&str] = &[
@@ -50,7 +53,26 @@ impl MySqlClient {
                 source: e,
             })?;
 
-        Ok(Self { pool })
+        // 기능 감지 실패는 export 를 막을 이유가 아니므로 경고 후 미지원으로 처리
+        let has_index_expression = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS \
+             WHERE table_schema = 'information_schema' \
+               AND table_name = 'STATISTICS' AND column_name = 'EXPRESSION'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map(|n| n > 0)
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                "STATISTICS.EXPRESSION 지원 여부 확인 실패 — 함수형 인덱스 식 생략: {e}"
+            );
+            false
+        });
+
+        Ok(Self {
+            pool,
+            has_index_expression,
+        })
     }
 
     /// 스키마 목록 조회 (시스템 스키마 제외, target_db 필터링)
@@ -216,24 +238,39 @@ impl MySqlClient {
     pub async fn get_indexes(&self, schema: &str, table: &str) -> Result<Vec<IndexInfo>, AppError> {
         // CAST(... AS CHAR): MySQL 8.0~8.4 information_schema VARBINARY 호환
         // CAST(non_unique AS SIGNED): 서버별로 INT/BIGINT 가 섞여 i32 디코딩이 실패하던 문제 방지
-        let rows = sqlx::query(
+        // 컬럼 표기는 SHOW CREATE TABLE 과 맞춘다:
+        // - 함수형 인덱스: column_name 이 NULL 이고 EXPRESSION 에 `(식)` (8.0.13+)
+        // - prefix 인덱스: col(N) — SPATIAL 은 SUB_PART 가 내부값(32)이라 제외
+        // - 내림차순: col DESC (COLLATION = 'D', 8.0+)
+        let column_expr = if self.has_index_expression {
+            "IFNULL(column_name, expression)"
+        } else {
+            "column_name"
+        };
+        let sql = format!(
             "SELECT CAST(index_name AS CHAR) AS index_name, \
              CAST(non_unique AS SIGNED) AS non_unique_flag, \
-             CAST(GROUP_CONCAT(column_name ORDER BY seq_in_index) AS CHAR) AS index_columns \
+             CAST(index_type AS CHAR) AS index_type, \
+             CAST(GROUP_CONCAT(CONCAT({column_expr}, \
+                 IF(sub_part IS NULL OR index_type = 'SPATIAL', '', CONCAT('(', sub_part, ')')), \
+                 IF(collation = 'D', ' DESC', '')) \
+               ORDER BY seq_in_index) AS CHAR) AS index_columns \
              FROM information_schema.STATISTICS \
              WHERE table_schema = ? AND table_name = ? AND index_name != 'PRIMARY' \
-             GROUP BY index_name, non_unique \
-             ORDER BY index_name",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AppError::MetadataQuery {
-            schema: schema.to_string(),
-            table: table.to_string(),
-            source: e,
-        })?;
+             GROUP BY index_name, non_unique, index_type \
+             ORDER BY index_name"
+        );
+        // 동적 부분은 위 두 상수 중 하나뿐이고 사용자 값은 전부 `?` 바인딩
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(schema)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AppError::MetadataQuery {
+                schema: schema.to_string(),
+                table: table.to_string(),
+                source: e,
+            })?;
 
         let mut indexes = Vec::new();
         for row in rows {
@@ -250,6 +287,7 @@ impl MySqlClient {
                 },
                 index_columns: try_get_or_warn(&row, "index_columns", schema, table),
                 predicate: None,
+                index_type: try_get_or_warn(&row, "index_type", schema, table),
             });
         }
         Ok(indexes)

@@ -17,7 +17,7 @@ use crate::{error::AppError, identifier::quote_pg_identifier};
 pub struct ParsedIndex {
     /// `CREATE UNIQUE INDEX ...` 여부.
     pub is_unique: bool,
-    /// 컬럼 목록을 쉼표로 결합한 문자열. 정렬 수식어(ASC/DESC/NULLS ...)는 제거된다.
+    /// 컬럼 목록을 쉼표로 결합한 문자열. DESC·NULLS·opclass 등은 유지하고 기본값 ASC 만 제거한다.
     pub columns: String,
     /// 파셜 인덱스의 `WHERE ...` 절. 존재하지 않으면 `None`.
     pub predicate: Option<String>,
@@ -90,7 +90,7 @@ fn find_column_block(indexdef: &str) -> Option<(usize, usize)> {
 
 /// 컬럼 블록 내부(괄호 제외) 문자열을 받아 정규화된 컬럼 목록 문자열을 만든다.
 ///
-/// 최상위 쉼표로 분리한 뒤 각 항목에서 ASC/DESC, NULLS FIRST/LAST 수식어를 제거한다.
+/// 최상위 쉼표로 분리한 뒤 각 항목에서 기본값인 ASC 수식어만 제거한다.
 fn extract_columns_from_block(inner: &str) -> String {
     let parts = split_top_level_commas(inner);
     let cleaned: Vec<String> = parts
@@ -148,9 +148,10 @@ fn split_top_level_commas(s: &str) -> Vec<String> {
     parts
 }
 
-/// 인덱스 컬럼 표현에서 ASC/DESC, NULLS FIRST/LAST 수식어를 제거한다.
+/// 인덱스 컬럼 표현에서 기본값인 `ASC` 만 제거한다 (DESC·NULLS·opclass·COLLATE 는 정보라 유지).
 ///
-/// 예: `"col1 DESC NULLS FIRST"` → `"col1"`
+/// 예: `"col1 DESC NULLS FIRST"` → `"col1 DESC NULLS FIRST"`
+/// 예: `"score ASC"` → `"score"`
 /// 예: `"lower(name)"` → `"lower(name)"` (표현식은 그대로 유지)
 fn clean_index_column(col_expr: &str) -> String {
     // 표현식(함수 호출 등)이 포함된 경우 괄호가 있으므로 그대로 반환
@@ -158,9 +159,11 @@ fn clean_index_column(col_expr: &str) -> String {
         return col_expr.to_string();
     }
 
-    // 공백으로 분리하여 첫 번째 토큰(컬럼 이름)만 추출
-    // 나머지는 ASC/DESC/NULLS FIRST/NULLS LAST 등의 수식어
-    col_expr.split_whitespace().next().unwrap_or("").to_string()
+    col_expr
+        .split_whitespace()
+        .filter(|token| !token.eq_ignore_ascii_case("ASC"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `pg_get_constraintdef` 출력에서 FK 액션을 추출한다.
@@ -229,10 +232,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_indexdef_unique_multi_column_strips_sort_modifiers() {
+    fn parse_indexdef_unique_multi_column_keeps_desc() {
         let parsed = parse_pg_indexdef("CREATE UNIQUE INDEX idx ON t USING btree (a, b DESC)");
         assert!(parsed.is_unique);
-        assert_eq!(parsed.columns, "a, b");
+        assert_eq!(parsed.columns, "a, b DESC");
         assert_eq!(parsed.predicate, None);
     }
 

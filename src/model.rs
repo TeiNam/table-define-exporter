@@ -247,9 +247,23 @@ impl ColumnInfo {
 pub struct IndexInfo {
     pub index_name: String,
     pub non_unique: i32,       // 1 = Normal, 0 = Unique
-    pub index_columns: String, // 쉼표 구분 컬럼 목록
+    pub index_columns: String, // 쉼표 구분 컬럼 목록 (DESC·prefix 길이·함수식 포함)
     /// 파셜 인덱스의 WHERE 절 predicate (없으면 None)
     pub predicate: Option<String>,
+    /// MySQL `INDEX_TYPE` (BTREE/HASH/FULLTEXT/SPATIAL). PostgreSQL 은 None
+    pub index_type: Option<String>,
+}
+
+impl IndexInfo {
+    /// 정의서에 표시할 인덱스 종류: Fulltext / Spatial / Unique / Normal
+    pub fn kind_label(&self) -> &'static str {
+        match self.index_type.as_deref() {
+            Some("FULLTEXT") => "Fulltext",
+            Some("SPATIAL") => "Spatial",
+            _ if self.non_unique == 0 => "Unique",
+            _ => "Normal",
+        }
+    }
 }
 
 /// 외래 키 제약 조건 정보

@@ -410,6 +410,7 @@ impl PgClient {
                 non_unique: if is_unique { 0 } else { 1 },
                 index_columns: columns,
                 predicate,
+                index_type: None,
             });
         }
         Ok(indexes)

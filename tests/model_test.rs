@@ -502,3 +502,22 @@ fn col_with_extra(
         comment: None,
     }
 }
+
+// 인덱스 종류 라벨: FULLTEXT/SPATIAL 은 유니크 여부와 무관하게 종류로 표시
+#[test]
+fn index_kind_label() {
+    use td_export::model::IndexInfo;
+    let idx = |non_unique: i32, index_type: Option<&str>| IndexInfo {
+        index_name: "i".to_string(),
+        non_unique,
+        index_columns: "c".to_string(),
+        predicate: None,
+        index_type: index_type.map(str::to_string),
+    };
+    assert_eq!(idx(1, Some("FULLTEXT")).kind_label(), "Fulltext");
+    assert_eq!(idx(1, Some("SPATIAL")).kind_label(), "Spatial");
+    assert_eq!(idx(0, Some("BTREE")).kind_label(), "Unique");
+    assert_eq!(idx(1, Some("BTREE")).kind_label(), "Normal");
+    assert_eq!(idx(0, None).kind_label(), "Unique");
+    assert_eq!(idx(1, None).kind_label(), "Normal");
+}

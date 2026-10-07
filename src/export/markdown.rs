@@ -132,15 +132,12 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
             if !t.indexes.is_empty() {
                 writeln!(file, "**Index**")?;
                 for idx in &t.indexes {
-                    let idx_type = if idx.non_unique == 1 {
-                        "Normal"
-                    } else {
-                        "Unique"
-                    };
                     write!(
                         file,
                         "- [{}]{}({})",
-                        idx_type, idx.index_name, idx.index_columns
+                        idx.kind_label(),
+                        idx.index_name,
+                        idx.index_columns
                     )?;
                     // 파셜 인덱스(partial index): predicate가 존재하면 " WHERE <predicate>" 추가
                     if let Some(pred) = &idx.predicate {
