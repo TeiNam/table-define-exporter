@@ -107,6 +107,10 @@ pub enum PgConstraintType {
         ref_columns: Vec<String>,
         on_delete: String,
         on_update: String,
+        /// `MATCH FULL` / `MATCH PARTIAL` 의 FULL·PARTIAL (기본값 SIMPLE 은 None)
+        match_type: Option<String>,
+        /// `DEFERRABLE` / `DEFERRABLE INITIALLY DEFERRED` (기본값 NOT DEFERRABLE 은 None)
+        deferrable: Option<String>,
     },
     /// CHECK 제약 조건
     Check { expression: String },

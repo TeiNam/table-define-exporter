@@ -5,7 +5,8 @@ use crate::{
     db::try_get_or_warn,
     error::AppError,
     model::{
-        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDef, ViewInfo,
+        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDef,
+        ViewInfo, fk_reference,
     },
 };
 
@@ -420,96 +421,35 @@ impl PgClient {
 
     /// 외래 키 제약 조건 조회 (BASE TABLE 전용)
     ///
-    /// `information_schema.table_constraints` + `key_column_usage` +
-    /// `referential_constraints`를 조인하여 FOREIGN KEY 제약 조건만 수집한다.
-    /// CHECK/UNIQUE 등 다른 제약 조건은 수집하지 않는다.
+    /// DDL 재구성과 같은 `pg_constraint` 조회를 써서 다중 컬럼 FK 의 로컬·참조 컬럼을
+    /// 정의 순서대로 짝지어 얻는다 (information_schema 의 constraint_column_usage 는
+    /// 순서 정보가 없어 다중 컬럼 FK 의 참조 컬럼을 하나만 보여줬다).
     pub async fn get_constraints(
         &self,
         schema: &str,
         table: &str,
     ) -> Result<Vec<ConstInfo>, AppError> {
-        // FK 제약 조건 조회: table_constraints + key_column_usage +
-        // constraint_column_usage + referential_constraints 조인
-        let rows = sqlx::query(
-            "SELECT \
-                 tc.constraint_name, \
-                 kcu.column_name, \
-                 ccu.table_name AS ref_table, \
-                 ccu.column_name AS ref_column, \
-                 rc.delete_rule, \
-                 rc.update_rule \
-             FROM information_schema.table_constraints tc \
-             JOIN information_schema.key_column_usage kcu \
-               ON kcu.constraint_name = tc.constraint_name \
-               AND kcu.constraint_schema = tc.constraint_schema \
-             JOIN information_schema.constraint_column_usage ccu \
-               ON ccu.constraint_name = tc.constraint_name \
-               AND ccu.constraint_schema = tc.constraint_schema \
-             JOIN information_schema.referential_constraints rc \
-               ON rc.constraint_name = tc.constraint_name \
-               AND rc.constraint_schema = tc.constraint_schema \
-             WHERE tc.table_schema = $1 \
-               AND tc.table_name = $2 \
-               AND tc.constraint_type = 'FOREIGN KEY' \
-             ORDER BY tc.constraint_name, kcu.ordinal_position",
-        )
-        .bind(schema)
-        .bind(table)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| AppError::MetadataQuery {
-            schema: schema.to_string(),
-            table: table.to_string(),
-            source: e,
-        })?;
-
-        // 동일 제약 조건의 여러 컬럼을 그룹화
-        let mut constraint_map: Vec<(String, Vec<String>, String, String, String)> = Vec::new();
-
-        for row in &rows {
-            // try_get 실패 시 경고 로그 + 기본값 반환 (Requirements 5.2)
-            let constraint_name: String = try_get_or_warn(row, "constraint_name", schema, table);
-            let column_name: String = try_get_or_warn(row, "column_name", schema, table);
-            let ref_table: String = try_get_or_warn(row, "ref_table", schema, table);
-            let ref_column: String = try_get_or_warn(row, "ref_column", schema, table);
-            let delete_rule: String = try_get_or_warn(row, "delete_rule", schema, table);
-            let update_rule: String = try_get_or_warn(row, "update_rule", schema, table);
-
-            // 이미 같은 제약 조건이 있으면 컬럼만 추가
-            if let Some(existing) = constraint_map
-                .iter_mut()
-                .find(|(name, _, _, _, _)| name == &constraint_name)
-            {
-                if !existing.1.contains(&column_name) {
-                    existing.1.push(column_name);
-                }
-            } else {
-                let reference = format!("{ref_table}.{ref_column}");
-                constraint_map.push((
-                    constraint_name,
-                    vec![column_name],
-                    reference,
-                    delete_rule,
-                    update_rule,
-                ));
-            }
-        }
-
-        // ConstInfo로 변환
-        let constraints = constraint_map
+        let constraints = ddl::fetch_constraints(&self.pool, schema, table).await?;
+        Ok(constraints
             .into_iter()
-            .map(
-                |(name, columns, reference, delete_action, update_action)| ConstInfo {
-                    constraint_name: name,
-                    constraint_column: columns.join(", "),
-                    reference,
-                    delete_action,
-                    update_action,
-                },
-            )
-            .collect();
-
-        Ok(constraints)
+            .filter_map(|c| match c.constraint_type {
+                PgConstraintType::ForeignKey {
+                    ref_schema,
+                    ref_table,
+                    ref_columns,
+                    on_delete,
+                    on_update,
+                    ..
+                } => Some(ConstInfo {
+                    constraint_name: c.name,
+                    constraint_column: c.columns.join(", "),
+                    reference: fk_reference(schema, &ref_schema, &ref_table, &ref_columns),
+                    delete_action: on_delete,
+                    update_action: on_update,
+                }),
+                _ => None,
+            })
+            .collect())
     }
 
     /// 뷰 정의 조회 (VIEW 전용)

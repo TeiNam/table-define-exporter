@@ -521,3 +521,22 @@ fn index_kind_label() {
     assert_eq!(idx(0, None).kind_label(), "Unique");
     assert_eq!(idx(1, None).kind_label(), "Normal");
 }
+
+// FK 참조 표기: 단일 table.col / 다중 table(c1, c2) / 다른 스키마는 schema. 접두어
+#[test]
+fn fk_reference_formats() {
+    use td_export::model::fk_reference;
+    let cols = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(fk_reference("m", "m", "users", &cols(&["id"])), "users.id");
+    assert_eq!(
+        fk_reference("m", "m", "parent", &cols(&["a", "b"])),
+        "parent(a, b)"
+    );
+    assert_eq!(
+        fk_reference("m", "m2", "other", &cols(&["id"])),
+        "m2.other.id"
+    );
+    assert_eq!(fk_reference("p", "q", "t", &cols(&["a", "b"])), "q.t(a, b)");
+    // 참조 스키마를 모르면(빈 값) 테이블만
+    assert_eq!(fk_reference("m", "", "users", &cols(&["id"])), "users.id");
+}

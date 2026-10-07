@@ -6,7 +6,8 @@ use crate::{
     error::AppError,
     identifier,
     model::{
-        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDef, ViewInfo,
+        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDef,
+        ViewInfo, fk_reference,
     },
 };
 
@@ -321,10 +322,14 @@ impl MySqlClient {
         table: &str,
     ) -> Result<Vec<ConstInfo>, AppError> {
         // CAST(... AS CHAR): MySQL 8.0~8.4 information_schema VARBINARY 호환
+        // FK 컬럼 단위로 읽어 Rust 에서 묶는다. 예전처럼 referenced_column_name 까지
+        // GROUP BY 하면 다중 컬럼 FK 가 컬럼 수만큼 여러 줄로 갈라진다.
         let rows = sqlx::query(
             "SELECT CAST(kcu.constraint_name AS CHAR) AS constraint_name, \
-             CAST(GROUP_CONCAT(kcu.column_name ORDER BY kcu.ordinal_position) AS CHAR) AS constraint_column, \
-             CAST(CONCAT(kcu.referenced_table_name, '.', kcu.referenced_column_name) AS CHAR) AS reference_col, \
+             CAST(kcu.column_name AS CHAR) AS column_name, \
+             CAST(kcu.referenced_table_schema AS CHAR) AS ref_schema, \
+             CAST(kcu.referenced_table_name AS CHAR) AS ref_table, \
+             CAST(kcu.referenced_column_name AS CHAR) AS ref_column, \
              CAST(rc.delete_rule AS CHAR) AS delete_rule, \
              CAST(rc.update_rule AS CHAR) AS update_rule \
              FROM information_schema.KEY_COLUMN_USAGE kcu \
@@ -333,9 +338,7 @@ impl MySqlClient {
                AND kcu.constraint_schema = rc.constraint_schema \
              WHERE kcu.table_schema = ? AND kcu.table_name = ? \
                AND kcu.constraint_name != 'PRIMARY' \
-             GROUP BY kcu.constraint_name, kcu.referenced_table_name, \
-                      kcu.referenced_column_name, rc.delete_rule, rc.update_rule \
-             ORDER BY kcu.constraint_name",
+             ORDER BY kcu.constraint_name, kcu.ordinal_position",
         )
         .bind(schema)
         .bind(table)
@@ -347,16 +350,61 @@ impl MySqlClient {
             source: e,
         })?;
 
-        let mut constraints = Vec::new();
-        for row in rows {
-            constraints.push(ConstInfo {
-                constraint_name: try_get_or_warn(&row, "constraint_name", schema, table),
-                constraint_column: try_get_or_warn(&row, "constraint_column", schema, table),
-                reference: try_get_or_warn(&row, "reference_col", schema, table),
-                delete_action: try_get_or_warn(&row, "delete_rule", schema, table),
-                update_action: try_get_or_warn(&row, "update_rule", schema, table),
-            });
+        // (이름, 로컬 컬럼, 참조 스키마, 참조 테이블, 참조 컬럼, ON DELETE, ON UPDATE)
+        type FkRow = (
+            String,
+            Vec<String>,
+            String,
+            String,
+            Vec<String>,
+            String,
+            String,
+        );
+        let mut foreign_keys: Vec<FkRow> = Vec::new();
+        for row in &rows {
+            let name: String = try_get_or_warn(row, "constraint_name", schema, table);
+            let column: String = try_get_or_warn(row, "column_name", schema, table);
+            let ref_column: String = try_get_or_warn(row, "ref_column", schema, table);
+            match foreign_keys.last_mut() {
+                // ORDER BY constraint_name 이라 같은 FK 의 컬럼은 연속해서 온다
+                Some(last) if last.0 == name => {
+                    last.1.push(column);
+                    last.4.push(ref_column);
+                }
+                _ => foreign_keys.push((
+                    name,
+                    vec![column],
+                    try_get_or_warn(row, "ref_schema", schema, table),
+                    try_get_or_warn(row, "ref_table", schema, table),
+                    vec![ref_column],
+                    try_get_or_warn(row, "delete_rule", schema, table),
+                    try_get_or_warn(row, "update_rule", schema, table),
+                )),
+            }
         }
+
+        let constraints = foreign_keys
+            .into_iter()
+            .map(
+                |(
+                    name,
+                    columns,
+                    ref_schema,
+                    ref_table,
+                    ref_columns,
+                    delete_action,
+                    update_action,
+                )| {
+                    ConstInfo {
+                        constraint_name: name,
+                        constraint_column: columns.join(", "),
+                        reference: fk_reference(schema, &ref_schema, &ref_table, &ref_columns),
+                        delete_action,
+                        update_action,
+                    }
+                },
+            )
+            .collect();
         Ok(constraints)
     }
 

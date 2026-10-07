@@ -6,7 +6,7 @@
 
 use crate::{error::AppError, identifier::quote_pg_identifier};
 
-use super::parse::{extract_check_expression, parse_fk_actions_from_condef, quote_column_list};
+use super::parse::{extract_check_expression, parse_fk_options, quote_column_list};
 use super::types::{
     PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, build_pg_column_type,
 };
@@ -108,6 +108,8 @@ pub fn build_pg_ddl_from_metadata(
             ref ref_columns,
             ref on_delete,
             ref on_update,
+            ref match_type,
+            ref deferrable,
         } = c.constraint_type
         {
             let quoted_name = quote_pg_identifier(&c.name)?;
@@ -115,10 +117,19 @@ pub fn build_pg_ddl_from_metadata(
             let quoted_ref_schema = quote_pg_identifier(ref_schema)?;
             let quoted_ref_table = quote_pg_identifier(ref_table)?;
             let ref_cols = quote_column_list(ref_columns)?;
+            // 문법 순서: REFERENCES .. [MATCH x] [ON DELETE] [ON UPDATE] [DEFERRABLE ..]
+            let match_clause = match_type
+                .as_deref()
+                .map(|m| format!(" MATCH {m}"))
+                .unwrap_or_default();
+            let deferrable_clause = deferrable
+                .as_deref()
+                .map(|d| format!(" {d}"))
+                .unwrap_or_default();
             entries.push(format!(
                 "    CONSTRAINT {quoted_name} FOREIGN KEY ({local_cols}) \
-                 REFERENCES {quoted_ref_schema}.{quoted_ref_table} ({ref_cols}) \
-                 ON DELETE {on_delete} ON UPDATE {on_update}"
+                 REFERENCES {quoted_ref_schema}.{quoted_ref_table} ({ref_cols}){match_clause} \
+                 ON DELETE {on_delete} ON UPDATE {on_update}{deferrable_clause}"
             ));
         }
     }
@@ -264,6 +275,51 @@ pub(super) async fn fetch_table_ddl(
     }
 
     // 2. 제약 조건 조회 (pg_constraint)
+    let ddl_constraints = fetch_constraints(pool, schema, table).await?;
+
+    // 3. 인덱스 정의 조회 (PK/UQ 제약 조건 인덱스 제외)
+    let index_rows = sqlx::query(
+        "SELECT pg_get_indexdef(i.indexrelid) AS indexdef \
+         FROM pg_catalog.pg_index i \
+         JOIN pg_catalog.pg_class cl ON cl.oid = i.indrelid \
+         JOIN pg_catalog.pg_namespace ns ON ns.oid = cl.relnamespace \
+         WHERE ns.nspname = $1 AND cl.relname = $2 \
+           AND NOT i.indisprimary \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM pg_catalog.pg_constraint con \
+               WHERE con.conindid = i.indexrelid \
+                 AND con.contype IN ('p', 'u') \
+           ) \
+         ORDER BY i.indexrelid",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::MetadataQuery {
+        schema: schema.to_string(),
+        table: table.to_string(),
+        source: e,
+    })?;
+
+    let index_defs: Vec<String> = index_rows
+        .iter()
+        .map(|row| try_get_or_warn::<_, String>(row, "indexdef", schema, table))
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // 4. DDL 재구성
+    build_pg_ddl_from_metadata(schema, table, &ddl_columns, &ddl_constraints, &index_defs)
+}
+
+/// 테이블의 PK/UNIQUE/FK/CHECK 제약 조건을 `pg_constraint` 에서 조회한다 (정의 순서 보존).
+///
+/// DDL 재구성과 정의서용 FK 목록(`PgClient::get_constraints`)이 함께 쓴다.
+pub(super) async fn fetch_constraints(
+    pool: &sqlx::PgPool,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<PgDdlConstraint>, AppError> {
     //
     // FK의 참조 컬럼 이름을 해석하기 위해 과거에는 제약 조건마다 별도의
     // `pg_attribute` 쿼리를 발행했으나, 이는 테이블당 FK 개수에 비례한
@@ -353,16 +409,19 @@ pub(super) async fn fetch_table_ddl(
             "p" => PgConstraintType::PrimaryKey,
             "u" => PgConstraintType::Unique,
             "f" => {
-                // ON DELETE / ON UPDATE 액션 추출
-                let (on_delete, on_update) = parse_fk_actions_from_condef(&condef);
+                // MATCH / ON DELETE / ON UPDATE / DEFERRABLE 추출
+                // (NOT VALID 는 CREATE TABLE 문법에 없으므로 버린다)
+                let options = parse_fk_options(&condef);
 
                 PgConstraintType::ForeignKey {
                     ref_schema: ref_schema.unwrap_or_default(),
                     ref_table: ref_table.unwrap_or_default(),
                     // 참조 컬럼 이름도 서브쿼리로 이미 해석됨 → 추가 쿼리 없음
                     ref_columns: ref_col_names.unwrap_or_default(),
-                    on_delete,
-                    on_update,
+                    on_delete: options.on_delete,
+                    on_update: options.on_update,
+                    match_type: options.match_type,
+                    deferrable: options.deferrable,
                 }
             }
             "c" => {
@@ -384,37 +443,5 @@ pub(super) async fn fetch_table_ddl(
         });
     }
 
-    // 3. 인덱스 정의 조회 (PK/UQ 제약 조건 인덱스 제외)
-    let index_rows = sqlx::query(
-        "SELECT pg_get_indexdef(i.indexrelid) AS indexdef \
-         FROM pg_catalog.pg_index i \
-         JOIN pg_catalog.pg_class cl ON cl.oid = i.indrelid \
-         JOIN pg_catalog.pg_namespace ns ON ns.oid = cl.relnamespace \
-         WHERE ns.nspname = $1 AND cl.relname = $2 \
-           AND NOT i.indisprimary \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM pg_catalog.pg_constraint con \
-               WHERE con.conindid = i.indexrelid \
-                 AND con.contype IN ('p', 'u') \
-           ) \
-         ORDER BY i.indexrelid",
-    )
-    .bind(schema)
-    .bind(table)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::MetadataQuery {
-        schema: schema.to_string(),
-        table: table.to_string(),
-        source: e,
-    })?;
-
-    let index_defs: Vec<String> = index_rows
-        .iter()
-        .map(|row| try_get_or_warn::<_, String>(row, "indexdef", schema, table))
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    // 4. DDL 재구성
-    build_pg_ddl_from_metadata(schema, table, &ddl_columns, &ddl_constraints, &index_defs)
+    Ok(ddl_constraints)
 }
