@@ -454,8 +454,43 @@ proptest! {
 // 기본값 표시: NULL / 빈 문자열 / 기본값 없음 구분
 #[test]
 fn display_default_distinguishes_null_empty_and_none() {
-    use td_export::model::ColumnInfo;
-    let col = |default: Option<&str>, nullable: &str| ColumnInfo {
+    let col = |default: Option<&str>, nullable: &str| col_with_extra(default, nullable, None);
+    assert_eq!(col(None, "YES").display_default(), "NULL");
+    assert_eq!(col(None, "NO").display_default(), "");
+    assert_eq!(col(Some(""), "NO").display_default(), "''");
+    assert_eq!(col(Some(""), "YES").display_default(), "''");
+    assert_eq!(col(Some("0"), "NO").display_default(), "0");
+}
+
+// generated 컬럼은 nullable 이어도 기본값이 없다 (DEFAULT 지정 불가)
+#[test]
+fn display_default_is_blank_for_generated_columns() {
+    for extra in [
+        "VIRTUAL GENERATED",
+        "STORED GENERATED",
+        "VIRTUAL GENERATED (`a` + 1)",
+        "STORED GENERATED (`a` * 2)",
+    ] {
+        assert_eq!(
+            col_with_extra(None, "YES", Some(extra)).display_default(),
+            "",
+            "extra={extra}"
+        );
+    }
+    // 표현식 기본값(DEFAULT_GENERATED)은 generated 컬럼이 아니다
+    assert_eq!(
+        col_with_extra(Some("CURRENT_TIMESTAMP"), "YES", Some("DEFAULT_GENERATED"))
+            .display_default(),
+        "CURRENT_TIMESTAMP"
+    );
+}
+
+fn col_with_extra(
+    default: Option<&str>,
+    nullable: &str,
+    extra: Option<&str>,
+) -> td_export::model::ColumnInfo {
+    td_export::model::ColumnInfo {
         column_name: "c".to_string(),
         default_value: default.map(str::to_string),
         nullable: nullable.to_string(),
@@ -463,12 +498,7 @@ fn display_default_distinguishes_null_empty_and_none() {
         charset: None,
         collation: None,
         column_key: None,
-        extra: None,
+        extra: extra.map(str::to_string),
         comment: None,
-    };
-    assert_eq!(col(None, "YES").display_default(), "NULL");
-    assert_eq!(col(None, "NO").display_default(), "");
-    assert_eq!(col(Some(""), "NO").display_default(), "''");
-    assert_eq!(col(Some(""), "YES").display_default(), "''");
-    assert_eq!(col(Some("0"), "NO").display_default(), "0");
+    }
 }
