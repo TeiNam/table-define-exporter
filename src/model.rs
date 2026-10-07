@@ -271,9 +271,28 @@ impl IndexInfo {
 pub struct ConstInfo {
     pub constraint_name: String,
     pub constraint_column: String,
-    pub reference: String, // "{table}.{column}" 형식
+    pub reference: String, // [`fk_reference`] 형식
     pub delete_action: String,
     pub update_action: String,
+}
+
+/// FK 참조 대상 표기: 단일 컬럼 `table.col`, 다중 컬럼 `table(c1, c2)`.
+/// 다른 스키마의 테이블을 참조하면 `schema.` 를 앞에 붙인다.
+pub fn fk_reference(
+    schema: &str,
+    ref_schema: &str,
+    ref_table: &str,
+    ref_columns: &[String],
+) -> String {
+    let table = if ref_schema.is_empty() || ref_schema == schema {
+        ref_table.to_string()
+    } else {
+        format!("{ref_schema}.{ref_table}")
+    };
+    match ref_columns {
+        [single] => format!("{table}.{single}"),
+        columns => format!("{table}({})", columns.join(", ")),
+    }
 }
 
 /// 뷰 정의 정보

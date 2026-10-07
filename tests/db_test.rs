@@ -1208,6 +1208,39 @@ fn ddl_with_generated_column() {
 }
 
 #[test]
+fn ddl_foreign_key_keeps_match_and_deferrable_in_grammar_order() {
+    let columns = vec![PgDdlColumn {
+        name: "x".to_string(),
+        data_type: "int4".to_string(),
+        is_nullable: true,
+        default_value: None,
+        generated: None,
+        identity: None,
+    }];
+    let constraints = vec![PgDdlConstraint {
+        name: "fk".to_string(),
+        constraint_type: PgConstraintType::ForeignKey {
+            ref_schema: "p".to_string(),
+            ref_table: "parent".to_string(),
+            ref_columns: vec!["a".to_string()],
+            on_delete: "SET NULL".to_string(),
+            on_update: "CASCADE".to_string(),
+            match_type: Some("FULL".to_string()),
+            deferrable: Some("DEFERRABLE INITIALLY DEFERRED".to_string()),
+        },
+        columns: vec!["x".to_string()],
+    }];
+    let ddl = build_pg_ddl_from_metadata("p", "child", &columns, &constraints, &[]).unwrap();
+    assert!(
+        ddl.contains(
+            "CONSTRAINT \"fk\" FOREIGN KEY (\"x\") REFERENCES \"p\".\"parent\" (\"a\") MATCH FULL \
+             ON DELETE SET NULL ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED"
+        ),
+        "{ddl}"
+    );
+}
+
+#[test]
 fn view_ddl_uses_create_view() {
     // pg_get_viewdef 는 앞 공백 + 끝 세미콜론을 포함한다
     let ddl = build_pg_view_ddl("s2", "v", " SELECT 1 AS x;").unwrap();
@@ -1315,6 +1348,8 @@ fn ddl_with_foreign_key() {
             ref_columns: vec!["id".to_string()],
             on_delete: "CASCADE".to_string(),
             on_update: "NO ACTION".to_string(),
+            match_type: None,
+            deferrable: None,
         },
         columns: vec!["user_id".to_string()],
     }];
@@ -1366,6 +1401,8 @@ fn ddl_with_multiple_fks_reference_names_resolved() {
                 ref_columns: vec!["id".to_string()],
                 on_delete: "CASCADE".to_string(),
                 on_update: "NO ACTION".to_string(),
+                match_type: None,
+                deferrable: None,
             },
             columns: vec!["user_id".to_string()],
         },
@@ -1377,6 +1414,8 @@ fn ddl_with_multiple_fks_reference_names_resolved() {
                 ref_columns: vec!["id".to_string()],
                 on_delete: "SET NULL".to_string(),
                 on_update: "NO ACTION".to_string(),
+                match_type: None,
+                deferrable: None,
             },
             columns: vec!["product_id".to_string()],
         },
