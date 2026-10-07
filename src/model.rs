@@ -219,6 +219,21 @@ pub struct ColumnInfo {
     pub comment: Option<String>,
 }
 
+impl ColumnInfo {
+    /// 정의서에 표시할 기본값.
+    /// - 기본값 없음 + nullable → `NULL` (DB 가 암묵적으로 DEFAULT NULL 적용)
+    /// - 기본값 없음 + NOT NULL → 빈칸 (기본값 자체가 없음)
+    /// - 빈 문자열 기본값 → `''` (NULL 과 구분)
+    pub fn display_default(&self) -> &str {
+        match self.default_value.as_deref() {
+            None if self.nullable == "YES" => "NULL",
+            None => "",
+            Some("") => "''",
+            Some(v) => v,
+        }
+    }
+}
+
 /// 인덱스 정보
 #[derive(Debug, Clone)]
 pub struct IndexInfo {

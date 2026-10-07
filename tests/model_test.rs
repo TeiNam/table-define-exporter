@@ -450,3 +450,25 @@ proptest! {
         }
     }
 }
+
+// 기본값 표시: NULL / 빈 문자열 / 기본값 없음 구분
+#[test]
+fn display_default_distinguishes_null_empty_and_none() {
+    use td_export::model::ColumnInfo;
+    let col = |default: Option<&str>, nullable: &str| ColumnInfo {
+        column_name: "c".to_string(),
+        default_value: default.map(str::to_string),
+        nullable: nullable.to_string(),
+        column_type: "varchar(10)".to_string(),
+        charset: None,
+        collation: None,
+        column_key: None,
+        extra: None,
+        comment: None,
+    };
+    assert_eq!(col(None, "YES").display_default(), "NULL");
+    assert_eq!(col(None, "NO").display_default(), "");
+    assert_eq!(col(Some(""), "NO").display_default(), "''");
+    assert_eq!(col(Some(""), "YES").display_default(), "''");
+    assert_eq!(col(Some("0"), "NO").display_default(), "0");
+}
