@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::{
     error::AppError,
     model::{OutputFormat, RunConfig, SchemaCatalog, TableDef},
@@ -22,6 +24,36 @@ pub fn schema_filename(schema: &str, source: &str, ext: &str) -> String {
         sanitize_filename_part(schema),
         sanitize_filename_part(source)
     )
+}
+
+/// 스키마별 출력 파일명 목록 (스키마명 정렬 순).
+///
+/// 대소문자를 구분하지 않는 파일시스템(macOS·Windows 기본)에서는 `Sales`/`sales`, 정리 후
+/// 같아지는 `x/y`/`x_y` 가 같은 파일이 되어 한쪽 출력이 사라진다. 대소문자 무시로 겹치는
+/// 이름은 `{schema}~2`, `~3` 으로 구분한다 (정렬 후 부여해 실행마다 같은 결과).
+pub fn schema_filenames<'a>(
+    schemas: impl IntoIterator<Item = &'a String>,
+    source: &str,
+    ext: &str,
+) -> Vec<(&'a String, String)> {
+    let mut sorted: Vec<&String> = schemas.into_iter().collect();
+    sorted.sort();
+    let mut used = HashSet::new();
+    sorted
+        .into_iter()
+        .map(|schema| {
+            let mut name = schema_filename(schema, source, ext);
+            let mut n = 2;
+            while !used.insert(name.to_lowercase()) {
+                name = schema_filename(&format!("{schema}~{n}"), source, ext);
+                n += 1;
+            }
+            if n > 2 {
+                tracing::warn!("파일명 충돌(대소문자 무시) — {schema} 는 {name} 로 출력");
+            }
+            (schema, name)
+        })
+        .collect()
 }
 
 /// 워크북(Excel) 출력 파일명: `{source}.xlsx` — `source` 는 [`source_label`]

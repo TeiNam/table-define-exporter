@@ -73,7 +73,7 @@ fn make_view_table(name: &str) -> TableDef {
 // Validates: Requirements 9.1, 10.5, 11.1
 // ─────────────────────────────────────────────────────────────────────────────
 
-use td_export::export::{schema_filename, source_label, workbook_filename};
+use td_export::export::{schema_filename, schema_filenames, source_label, workbook_filename};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
@@ -153,6 +153,48 @@ fn source_label_distinguishes_port_and_database() {
         source_label(&config(DbType::Postgres, 55432, Some("app"))),
         "db.local_55432_app"
     );
+}
+
+/// 대소문자 무시 파일시스템에서 같은 파일이 되는 스키마명은 접미어로 구분된다.
+#[test]
+fn schema_filenames_avoid_case_insensitive_collisions() {
+    let schemas: Vec<String> = ["sales", "Sales", "x_y", "x/y", "app"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let names: Vec<(String, String)> = schema_filenames(&schemas, "h", "md")
+        .into_iter()
+        .map(|(s, f)| (s.clone(), f))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("Sales".to_string(), "Sales(h).md".to_string()),
+            ("app".to_string(), "app(h).md".to_string()),
+            ("sales".to_string(), "sales~2(h).md".to_string()),
+            ("x/y".to_string(), "x_y(h).md".to_string()),
+            ("x_y".to_string(), "x_y~2(h).md".to_string()),
+        ]
+    );
+}
+
+proptest! {
+    /// 입력 순서와 무관하게 같은 결과이고, 모든 파일명이 대소문자 무시로 고유하다.
+    #[test]
+    fn schema_filenames_unique_and_order_independent(
+        schemas in proptest::collection::hash_set("[a-zA-Z/_]{1,4}", 0..10),
+    ) {
+        let forward: Vec<String> = schemas.iter().cloned().collect();
+        let mut backward = forward.clone();
+        backward.reverse();
+        let a = schema_filenames(&forward, "h", "md");
+        let b = schema_filenames(&backward, "h", "md");
+        prop_assert_eq!(&a, &b);
+        let mut seen = std::collections::HashSet::new();
+        for (_, name) in &a {
+            prop_assert!(seen.insert(name.to_lowercase()), "duplicate: {}", name);
+        }
+    }
 }
 
 #[test]

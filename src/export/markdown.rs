@@ -35,8 +35,7 @@ impl Exporter for MarkdownExporter {
     fn setup(&mut self, catalog: &SchemaCatalog, config: &RunConfig) -> Result<(), AppError> {
         // 스키마별 .md 파일 생성 (기존 파일 덮어쓰기)
         let source = super::source_label(config);
-        for schema in catalog.keys() {
-            let filename = super::schema_filename(schema, &source, "md");
+        for (schema, filename) in super::schema_filenames(catalog.keys(), &source, "md") {
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)
