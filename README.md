@@ -155,7 +155,7 @@ RUST_LOG=debug ./td-export
 
 ### PostgreSQL
 
-- PostgreSQL 13, 14, 15, 16, 17 지원, 기본 포트 5432
+- PostgreSQL 13, 14, 15, 16, 17, 18 지원, 기본 포트 5432
 - `information_schema` + `pg_catalog`에서 메타데이터 수집
 - DDL 재구성 방식 (FK 해석은 단일 JOIN 쿼리로 처리 — N+1 없음)
 - 큰따옴표(`"`) 식별자 인용

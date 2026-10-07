@@ -1,8 +1,8 @@
 use proptest::prelude::*;
 use td_export::db::postgres::{
     ParsedIndex, PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity,
-    build_pg_column_type, build_pg_ddl_from_metadata, determine_pg_extra, filter_pg_schemas,
-    is_pg_system_schema, parse_pg_indexdef,
+    build_pg_column_type, build_pg_ddl_from_metadata, build_pg_view_ddl, determine_pg_extra,
+    filter_pg_schemas, is_pg_system_schema, parse_pg_indexdef,
 };
 use td_export::model::{ColumnInfo, GeneralInfo, TableDef, ViewInfo};
 
@@ -1205,6 +1205,14 @@ fn ddl_with_generated_column() {
     assert!(ddl.contains("GENERATED ALWAYS AS (a * 2) STORED"));
     // generated 컬럼에는 DEFAULT가 없어야 한다
     assert!(!ddl.contains("DEFAULT"));
+}
+
+#[test]
+fn view_ddl_uses_create_view() {
+    // pg_get_viewdef 는 앞 공백 + 끝 세미콜론을 포함한다
+    let ddl = build_pg_view_ddl("s2", "v", " SELECT 1 AS x;").unwrap();
+    assert_eq!(ddl, "CREATE VIEW \"s2\".\"v\" AS\n SELECT 1 AS x;\n");
+    assert!(build_pg_view_ddl("s;x", "v", " SELECT 1;").is_err());
 }
 
 #[test]

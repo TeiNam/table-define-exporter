@@ -145,6 +145,16 @@ pub fn build_pg_ddl_from_metadata(
     Ok(ddl)
 }
 
+/// 뷰 정의(`pg_get_viewdef` 결과)로 `CREATE VIEW "schema"."view" AS ...;` 를 만든다.
+pub fn build_pg_view_ddl(schema: &str, view: &str, definition: &str) -> Result<String, AppError> {
+    let quoted_schema = quote_pg_identifier(schema)?;
+    let quoted_view = quote_pg_identifier(view)?;
+    let body = definition.trim_end().trim_end_matches(';');
+    Ok(format!(
+        "CREATE VIEW {quoted_schema}.{quoted_view} AS\n{body};\n"
+    ))
+}
+
 /// PostgreSQL `PgPool`을 통해 테이블 메타데이터를 조회하고 DDL을 재구성한다.
 ///
 /// `information_schema.columns` + `pg_catalog.pg_constraint` + `pg_get_indexdef()`를
@@ -158,6 +168,26 @@ pub(super) async fn fetch_table_ddl(
     schema: &str,
     table: &str,
 ) -> Result<String, AppError> {
+    // 0. 뷰면 CREATE VIEW 로 출력 (컬럼으로 재구성하면 빈 CREATE TABLE 이 된다)
+    let view_def: Option<String> = sqlx::query_scalar(
+        "SELECT pg_get_viewdef(c.oid, true) \
+         FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'v'",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| AppError::MetadataQuery {
+        schema: schema.to_string(),
+        table: table.to_string(),
+        source: e,
+    })?;
+    if let Some(definition) = view_def {
+        return build_pg_view_ddl(schema, table, &definition);
+    }
+
     // 1. 컬럼 정보 조회 (ordinal_position 순)
     let col_rows = sqlx::query(
         "SELECT \
