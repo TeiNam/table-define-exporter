@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -78,7 +79,7 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
             file,
             "- [{} ({})](#{})",
             t.table_name,
-            comment,
+            cell(comment),
             t.table_name.to_lowercase()
         )?;
         write!(file, " ")?;
@@ -97,11 +98,11 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
             writeln!(
                 file,
                 "|{}|{}|{}|{}|{}|",
-                t.general.table_type,
-                t.general.engine.as_deref().unwrap_or(""),
-                t.general.row_format.as_deref().unwrap_or(""),
-                t.general.collate.as_deref().unwrap_or(""),
-                t.general.comment.as_deref().unwrap_or(""),
+                cell(&t.general.table_type),
+                cell(t.general.engine.as_deref().unwrap_or("")),
+                cell(t.general.row_format.as_deref().unwrap_or("")),
+                cell(t.general.collate.as_deref().unwrap_or("")),
+                cell(t.general.comment.as_deref().unwrap_or("")),
             )?;
             writeln!(file)?;
 
@@ -116,15 +117,15 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                 writeln!(
                     file,
                     "|{}|{}|{}|{}|{}|{}|{}|{}|{}|",
-                    c.column_name,
-                    c.column_type,
-                    c.nullable,
-                    c.display_default(),
-                    c.charset.as_deref().unwrap_or(""),
-                    c.collation.as_deref().unwrap_or(""),
-                    c.column_key.as_deref().unwrap_or(""),
-                    c.extra.as_deref().unwrap_or(""),
-                    c.comment.as_deref().unwrap_or(""),
+                    cell(&c.column_name),
+                    cell(&c.column_type),
+                    cell(&c.nullable),
+                    cell(c.display_default()),
+                    cell(c.charset.as_deref().unwrap_or("")),
+                    cell(c.collation.as_deref().unwrap_or("")),
+                    cell(c.column_key.as_deref().unwrap_or("")),
+                    cell(c.extra.as_deref().unwrap_or("")),
+                    cell(c.comment.as_deref().unwrap_or("")),
                 )?;
             }
             writeln!(file)?;
@@ -193,6 +194,21 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
     Ok(())
 }
 
+/// Markdown 표 셀(과 목차 한 줄)을 깨뜨리는 문자를 이스케이프한다.
+///
+/// 코멘트의 줄바꿈·`|`, PostgreSQL 기본값의 `||` 연산자, enum 값의 `|` 가 그대로
+/// 들어가면 행이 갈라지거나 칸이 밀린다. `|` → `\|`, 줄바꿈 → `<br>`.
+fn cell(s: &str) -> Cow<'_, str> {
+    if !s.contains(['|', '\n', '\r']) {
+        return Cow::Borrowed(s);
+    }
+    Cow::Owned(
+        s.replace("\r\n", "<br>")
+            .replace(['\n', '\r'], "<br>")
+            .replace('|', "\\|"),
+    )
+}
+
 /// VIEW의 SQL 본문을 언어 태그가 붙은 fenced code block으로 기록한다.
 ///
 /// Requirements 3.1/3.2/3.3 준수:
@@ -239,6 +255,20 @@ fn longest_backtick_run(s: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_escapes_pipes_and_newlines() {
+        assert!(matches!(cell("plain text"), Cow::Borrowed("plain text")));
+        assert_eq!(cell("a | b"), "a \\| b");
+        assert_eq!(
+            cell("('a'::text || 'b'::text)"),
+            "('a'::text \\|\\| 'b'::text)"
+        );
+        assert_eq!(
+            cell("첫 줄\r\n둘째\n셋째\r끝"),
+            "첫 줄<br>둘째<br>셋째<br>끝"
+        );
+    }
 
     #[test]
     fn longest_backtick_run_empty() {
