@@ -232,11 +232,8 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
             if let Some(ddl) = &t.ddl {
                 ws.merge_range(row, 0, row, 9, "Create SQL", &title_fmt)?;
                 row += 1;
-                // 한 셀에 넣으면 줄바꿈이 보이지 않으므로 DDL 한 줄 = 한 행으로 기록
-                for line in ddl.lines() {
-                    ws.merge_range(row, 0, row, 9, &fit_cell(line), &Format::new())?;
-                    row += 1;
-                }
+                ws.merge_range(row, 0, row, 9, &fit_cell(ddl), &Format::new())?;
+                row += 1;
             }
         } else if t.general.table_type == "VIEW" {
             // View Create SQL 섹션
