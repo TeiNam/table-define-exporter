@@ -437,8 +437,9 @@ fn ddl_column(row: &sqlx::mysql::MySqlRow, name: &str) -> Option<String> {
 ///
 /// MySQL 은 문자열 기본값을 따옴표 없이 돌려줘서 `DEFAULT 'NULL'`(문자열) 과
 /// `DEFAULT NULL`, 따옴표 두 개짜리 문자열과 `DEFAULT ''` 를 구분할 수 없다.
-/// 문자열·날짜 타입의 리터럴만 `'...'` 로 감싸고(`'` 는 `''` 로 이스케이프),
-/// 표현식 기본값(`DEFAULT_GENERATED`, 5.7 의 `CURRENT_TIMESTAMP`)과 숫자·bit 는 그대로 둔다.
+/// 문자열·날짜 타입의 리터럴만 `'...'` 로 감싸고(`\` → `\\`, `'` → `''`),
+/// 숫자·bit 는 그대로 둔다. 표현식 기본값(`DEFAULT_GENERATED`)은 information_schema 가
+/// 한 겹 더 씌운 백슬래시 이스케이프(`\'`, `\\`)를 벗기고, 5.7 의 `CURRENT_TIMESTAMP` 는 그대로.
 pub(crate) fn quote_literal_default(
     default: Option<String>,
     column_type: &str,
@@ -467,13 +468,32 @@ pub(crate) fn quote_literal_default(
         base_type.as_str(),
         "date" | "time" | "datetime" | "timestamp"
     );
-    let is_expression = extra.is_some_and(|e| e.contains("DEFAULT_GENERATED"))
-        || (is_temporal && value.to_ascii_uppercase().starts_with("CURRENT_TIMESTAMP"));
-    if (is_string || is_temporal) && !is_expression {
-        Some(format!("'{}'", value.replace('\'', "''")))
+    if extra.is_some_and(|e| e.contains("DEFAULT_GENERATED")) {
+        return Some(unescape_one_level(&value));
+    }
+    let is_current_timestamp =
+        is_temporal && value.to_ascii_uppercase().starts_with("CURRENT_TIMESTAMP");
+    if (is_string || is_temporal) && !is_current_timestamp {
+        Some(format!(
+            "'{}'",
+            value.replace('\\', "\\\\").replace('\'', "''")
+        ))
     } else {
         Some(value)
     }
+}
+
+/// 백슬래시 이스케이프를 한 겹 벗긴다: `\x` → `x` (`\'` → `'`, `\\` → `\`).
+fn unescape_one_level(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => out.push(chars.next().unwrap_or('\\')),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -541,6 +561,31 @@ mod tests {
         assert_eq!(
             q("uuid()", "varchar(36)", Some("DEFAULT_GENERATED")).as_deref(),
             Some("uuid()")
+        );
+        // 표현식 기본값: information_schema 의 이중 이스케이프를 벗겨 SHOW CREATE TABLE 과 동일하게
+        // (MySQL 8.4 실측 값)
+        assert_eq!(
+            q(
+                r"concat(_utf8mb4\'a\',_utf8mb4\'b\')",
+                "varchar(10)",
+                Some("DEFAULT_GENERATED")
+            )
+            .as_deref(),
+            Some("concat(_utf8mb4'a',_utf8mb4'b')")
+        );
+        assert_eq!(
+            q(
+                r"concat(_utf8mb4\'it\\\'s\',_utf8mb4\'\\\\\',_utf8mb4\'x\')",
+                "varchar(30)",
+                Some("DEFAULT_GENERATED")
+            )
+            .as_deref(),
+            Some(r"concat(_utf8mb4'it\'s',_utf8mb4'\\',_utf8mb4'x')")
+        );
+        // 문자열 리터럴의 백슬래시도 SHOW CREATE TABLE 처럼 \\ 로
+        assert_eq!(
+            q(r"plain\x", "varchar(10)", None).as_deref(),
+            Some(r"'plain\\x'")
         );
         // 기본값 없음은 그대로 None
         assert_eq!(quote_literal_default(None, "varchar(10)", None), None);
