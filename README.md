@@ -1,6 +1,6 @@
 # td-export
 
-![Rust](https://img.shields.io/badge/Rust-1.85+-orange.svg)
+![Rust](https://img.shields.io/badge/Rust-1.94+-orange.svg)
 ![MySQL](https://img.shields.io/badge/MySQL-5.7+-4479A1.svg)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--17-336791.svg)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI/CD-2088FF.svg)
@@ -53,7 +53,7 @@ MySQL 및 PostgreSQL 테이블 정의서를 Excel(.xlsx), Markdown(.md), SQL(.sq
 
 ### 소스에서 빌드
 
-사전 요구사항: Rust 1.85 이상 (stable).
+사전 요구사항: Rust 1.94 이상 (stable).
 
 ```bash
 cargo build --release
@@ -189,17 +189,17 @@ cargo test --all-features                               # 3. 전체 테스트
 cargo audit                                             # 4. 보안 감사
 ```
 
-- **의존성 업데이트 시**: `cargo update` 후 반드시 `cargo build`로 MSRV(1.85) 호환을 확인한다. 새 버전이 더 높은 Rust를 요구하면(예: edition 2024를 요구하는 transitive crate) CI MSRV 잡이 깨진다.
+- **의존성 업데이트 시**: `cargo update` 후 반드시 `cargo build`로 MSRV(1.94) 호환을 확인한다. 새 버전이 더 높은 Rust를 요구하면(예: edition 2024를 요구하는 transitive crate) CI MSRV 잡이 깨진다.
 - **edition/MSRV 변경 시**: `Cargo.toml`, `.github/workflows/ci.yml` 매트릭스, 이 README의 표기를 함께 갱신한다.
 - **Cargo.lock 버전 포맷**: 로컬 cargo가 lock을 v4로 다시 쓸 수 있다. CI MSRV가 그 포맷을 읽을 수 있어야 한다(lock v4 → Cargo 1.78+).
 
 ### MSRV
 
-**Minimum Supported Rust Version**: 1.85 (Rust edition 2024 사용)
+**Minimum Supported Rust Version**: 1.94 (Rust edition 2024, sqlx 0.9 요구사항)
 
 ### CI/CD
 
-- **CI**: `cargo fmt` / `clippy` / `test` / `cargo-llvm-cov` (70% 라인 커버리지 게이트) / `cargo audit` — Rust 1.85와 stable 매트릭스
+- **CI**: `cargo fmt` / `clippy` / `test` / `cargo-llvm-cov` (70% 라인 커버리지 게이트) / `cargo audit` — Rust 1.94와 stable 매트릭스
 - **Release**: `main` 브랜치에 push 시 자동으로 patch 버전 bump + 4개 플랫폼(linux/macos×2/windows) 바이너리 빌드 + GitHub Release 생성
 
 ## 원본(Go)과의 주요 차이점
