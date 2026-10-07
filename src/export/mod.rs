@@ -17,7 +17,30 @@ pub trait Exporter {
 
 /// 스키마별로 분리되는 출력 파일명: `{schema}({endpoint}).{ext}`
 pub fn schema_filename(schema: &str, endpoint: &str, ext: &str) -> String {
-    format!("{schema}({endpoint}).{ext}")
+    format!(
+        "{}({}).{ext}",
+        sanitize_filename_part(schema),
+        sanitize_filename_part(endpoint)
+    )
+}
+
+/// 워크북(Excel) 출력 파일명: `{endpoint}.xlsx`
+pub fn workbook_filename(endpoint: &str) -> String {
+    format!("{}.xlsx", sanitize_filename_part(endpoint))
+}
+
+/// 파일명에 쓸 수 없는 문자(경로 구분자, Windows 예약 문자, 제어 문자)를 `_`로 바꾼다.
+///
+/// 스키마명은 DB 에서 오는 외부 데이터라 `/`·`\` 를 남기면 cwd 밖에 파일을 쓸 수 있고,
+/// endpoint 는 IPv6(`::1`)·소켓 경로(`/tmp`)처럼 그대로는 파일명이 될 수 없는 값이 온다.
+fn sanitize_filename_part(part: &str) -> String {
+    part.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect()
 }
 
 /// 출력 포맷에 맞는 Exporter 인스턴스를 생성하는 팩토리 함수
