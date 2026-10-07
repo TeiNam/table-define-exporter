@@ -199,7 +199,7 @@ cargo audit                                             # 4. 보안 감사
 
 ### CI/CD
 
-- **CI**: `cargo fmt` / `clippy` / `test` / `cargo-llvm-cov` (70% 라인 커버리지 게이트) / `cargo audit` — Rust 1.94와 stable 매트릭스
+- **CI**: `cargo fmt` / `clippy` / `test` / `cargo-llvm-cov` (65% 라인 커버리지 게이트, DB 접속 필요 파일 제외) / `cargo audit` — Rust 1.94와 stable 매트릭스
 - **Release**: `main` 브랜치에 push 시 자동으로 patch 버전 bump + 4개 플랫폼(linux/macos×2/windows) 바이너리 빌드 + GitHub Release 생성
 
 ## 원본(Go)과의 주요 차이점
