@@ -207,15 +207,3 @@ fn markdown_omits_where_clause_when_predicate_none() {
         "predicate=None인데 Markdown 출력에 \" WHERE \"가 포함됨:\n{output}"
     );
 }
-
-/// BASE TABLE에 DDL이 있으면 Markdown에 원본 CREATE 문이 sql 코드 블록으로 포함된다.
-#[test]
-fn markdown_includes_create_sql_block_when_ddl_present() {
-    let tables = vec![make_table_with_index_predicate(None)];
-    let output = render_markdown_to_string("testschema", &tables);
-
-    assert!(
-        output.contains("**Create SQL**\n\n```sql\nCREATE TABLE users (id int);\n```\n"),
-        "Create SQL 블록이 없음\n{output}"
-    );
-}

@@ -121,14 +121,14 @@ RUST_LOG=debug ./td-export
 ### Excel (`{endpoint}.xlsx`)
 
 - 스키마별 시트 생성
-- 테이블별 블록: 테이블명, 설명, 컬럼 정보, 인덱스, 제약 조건, 원본 CREATE DDL(Create SQL), 테이블 정보
+- 테이블별 블록: 테이블명, 설명, 컬럼 정보, 인덱스, 제약 조건, 테이블 정보
 - 뷰(VIEW): View Create SQL 포함
 
 ### Markdown (`{schema}({endpoint}).md`)
 
 - 스키마별 파일 생성
 - 목차(Table List) 섹션 포함
-- 테이블별 섹션: 일반 정보, 컬럼 표, 인덱스(파셜 인덱스 `WHERE` 절 포함), 제약 조건, 원본 CREATE DDL 코드 블록(`Create SQL`)
+- 테이블별 섹션: 일반 정보, 컬럼 표, 인덱스(파셜 인덱스 `WHERE` 절 포함), 제약 조건
 - 뷰(VIEW): 뷰 정보 + View Create SQL 코드 블록 (언어 태그 `sql`)
 
 ### SQL (`{schema}({endpoint}).sql`)

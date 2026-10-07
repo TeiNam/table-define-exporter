@@ -149,12 +149,6 @@ async fn enrich_table_inner(
                         return table;
                     }
                 }
-                // 표에 담기지 않는 정보(CHECK, 인덱스 종류/정렬, 테이블 옵션 등)까지
-                // 보존하기 위해 원본 DDL도 함께 수집한다. 실패해도 표 정보는 유지.
-                match db.get_table_ddl(&schema, &table.table_name).await {
-                    Ok(ddl) => table.ddl = Some(ddl),
-                    Err(e) => tracing::warn!("{} - {}: {}", schema, table.table_name, e),
-                }
             } else if table.general.table_type == "VIEW" {
                 match db.get_view_info(&schema, &table.table_name).await {
                     Ok(view) => table.view = Some(view),

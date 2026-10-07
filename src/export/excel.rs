@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use rust_xlsxwriter::{Format, FormatBorder, Workbook, Worksheet, XlsxError};
 
 use crate::{
@@ -91,24 +89,6 @@ impl Exporter for ExcelExporter {
             .save(&self.filename)
             .map_err(|e| AppError::ExcelWrite(e.to_string()))
     }
-}
-
-/// Excel 셀 하나에 들어가는 최대 문자 수. 초과 시 워크북 저장 자체가 실패한다.
-const MAX_CELL_CHARS: usize = 32_767;
-const TRUNCATED_SUFFIX: &str = "\n... (truncated: exceeds Excel cell limit)";
-
-/// 셀 한도를 넘는 문자열은 잘라내고 표시를 붙인다 (전체 워크북 실패 방지).
-fn fit_cell(s: &str) -> Cow<'_, str> {
-    if s.chars().count() <= MAX_CELL_CHARS {
-        return Cow::Borrowed(s);
-    }
-    let keep = MAX_CELL_CHARS - TRUNCATED_SUFFIX.chars().count();
-    Cow::Owned(
-        s.chars()
-            .take(keep)
-            .chain(TRUNCATED_SUFFIX.chars())
-            .collect(),
-    )
 }
 
 /// 워크시트에 테이블 데이터를 기록하는 내부 함수
@@ -227,21 +207,13 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
                     row += 1;
                 }
             }
-
-            // 원본 CREATE DDL 섹션 — 표에 없는 세부 정보까지 보존
-            if let Some(ddl) = &t.ddl {
-                ws.merge_range(row, 0, row, 9, "Create SQL", &title_fmt)?;
-                row += 1;
-                ws.merge_range(row, 0, row, 9, &fit_cell(ddl), &Format::new())?;
-                row += 1;
-            }
         } else if t.general.table_type == "VIEW" {
             // View Create SQL 섹션
             ws.merge_range(row, 0, row, 9, "View Create SQL", &title_fmt)?;
             row += 1;
 
             let view_query = t.view.as_ref().map(|v| v.view_query.as_str()).unwrap_or("");
-            ws.merge_range(row, 0, row, 9, &fit_cell(view_query), &Format::new())?;
+            ws.merge_range(row, 0, row, 9, view_query, &Format::new())?;
             row += 1;
         }
 
@@ -302,25 +274,4 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fit_cell_keeps_short_text_as_is() {
-        assert!(matches!(
-            fit_cell("CREATE TABLE t (id int)"),
-            Cow::Borrowed(_)
-        ));
-    }
-
-    #[test]
-    fn fit_cell_truncates_to_excel_limit() {
-        let long = "가".repeat(MAX_CELL_CHARS + 10);
-        let out = fit_cell(&long);
-        assert_eq!(out.chars().count(), MAX_CELL_CHARS);
-        assert!(out.ends_with(TRUNCATED_SUFFIX));
-    }
 }
