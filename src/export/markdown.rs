@@ -118,7 +118,7 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                     c.column_name,
                     c.column_type,
                     c.nullable,
-                    c.default_value.as_deref().unwrap_or(""),
+                    c.display_default(),
                     c.charset.as_deref().unwrap_or(""),
                     c.collation.as_deref().unwrap_or(""),
                     c.column_key.as_deref().unwrap_or(""),

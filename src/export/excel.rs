@@ -143,7 +143,7 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
                 ws.write(row, 4, c.column_key.as_deref().unwrap_or(""))?;
                 ws.write(row, 5, c.extra.as_deref().unwrap_or(""))?;
                 ws.write(row, 6, c.collation.as_deref().unwrap_or(""))?;
-                ws.write(row, 7, c.default_value.as_deref().unwrap_or(""))?;
+                ws.write(row, 7, c.display_default())?;
                 ws.merge_range(
                     row,
                     8,
