@@ -39,6 +39,7 @@ fn make_base_table(name: &str) -> TableDef {
         indexes: vec![],
         constraints: vec![],
         view: None,
+        ddl_after: Vec::new(),
         ddl: Some(
             "CREATE TABLE `test` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY (`id`))"
                 .to_string(),
@@ -64,6 +65,7 @@ fn make_view_table(name: &str) -> TableDef {
             charset: "utf8mb4".to_string(),
             collate: "utf8mb4_general_ci".to_string(),
         }),
+        ddl_after: Vec::new(),
         ddl: None,
     }
 }
@@ -839,6 +841,7 @@ fn base_table_bytes_unchanged_after_view_fence_fix() {
             update_action: "CASCADE".to_string(),
         }],
         view: None,
+        ddl_after: Vec::new(),
         ddl: Some("CREATE TABLE orders ()".to_string()),
     };
 

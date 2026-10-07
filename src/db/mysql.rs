@@ -6,8 +6,8 @@ use crate::{
     error::AppError,
     identifier,
     model::{
-        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDef,
-        ViewInfo, fk_reference,
+        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDdl,
+        TableDef, ViewInfo, fk_reference,
     },
 };
 
@@ -439,7 +439,8 @@ impl MySqlClient {
     /// DDL 조회 (SQL 포맷 전용)
     /// `SHOW CREATE TABLE {schema}.{table}`을 실행하여 CREATE TABLE DDL을 가져온다.
     /// 스키마/테이블 이름은 백틱으로 안전하게 인용한다.
-    pub async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<String, AppError> {
+    /// FK 는 SHOW CREATE TABLE 안에 그대로 두고, SQL 출력이 `FOREIGN_KEY_CHECKS` 를 꺼서 순서 문제를 피한다.
+    pub async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<TableDdl, AppError> {
         let quoted_schema = identifier::quote_identifier(schema)?;
         let quoted_table = identifier::quote_identifier(table)?;
         let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
@@ -459,6 +460,10 @@ impl MySqlClient {
         // VIEW면 `Create Table` 컬럼이 없고 `Create View`가 온다 — 그쪽으로 폴백.
         ddl_column(&row, "Create Table")
             .or_else(|| ddl_column(&row, "Create View"))
+            .map(|create| TableDdl {
+                create,
+                after: Vec::new(),
+            })
             .ok_or_else(|| AppError::MetadataQuery {
                 schema: schema.to_string(),
                 table: table.to_string(),

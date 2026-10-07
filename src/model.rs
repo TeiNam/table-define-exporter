@@ -152,6 +152,17 @@ pub struct TableDef {
     pub constraints: Vec<ConstInfo>,
     pub view: Option<ViewInfo>,
     pub ddl: Option<String>,
+    /// 모든 테이블의 CREATE 뒤에 실행할 문장 (PostgreSQL FK 의 `ALTER TABLE ... ADD CONSTRAINT`)
+    pub ddl_after: Vec<String>,
+}
+
+/// SQL 출력용 테이블 DDL
+#[derive(Debug, Clone, Default)]
+pub struct TableDdl {
+    /// `CREATE TABLE` / `CREATE VIEW` 문
+    pub create: String,
+    /// 모든 테이블을 만든 뒤 실행할 문장 (참조 대상이 먼저 있어야 하는 FK 등)
+    pub after: Vec<String>,
 }
 
 impl TableDef {
@@ -191,7 +202,7 @@ impl TableDef {
         if let Some(v) = &self.view {
             total += v.view_query.len() + v.charset.len() + v.collate.len();
         }
-        total + opt(&self.ddl)
+        total + opt(&self.ddl) + self.ddl_after.iter().map(String::len).sum::<usize>()
     }
 }
 

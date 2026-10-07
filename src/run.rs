@@ -160,7 +160,10 @@ async fn enrich_table_inner(
             }
         }
         OutputFormat::Sql => match db.get_table_ddl(&schema, &table.table_name).await {
-            Ok(ddl) => table.ddl = Some(ddl),
+            Ok(ddl) => {
+                table.ddl = Some(ddl.create);
+                table.ddl_after = ddl.after;
+            }
             Err(e) => {
                 tracing::warn!("{} - {}: {}", schema, table.table_name, e);
                 return table;

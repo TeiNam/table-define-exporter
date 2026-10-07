@@ -1,8 +1,8 @@
 use proptest::prelude::*;
 use td_export::db::postgres::{
     ParsedIndex, PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity,
-    build_pg_column_type, build_pg_ddl_from_metadata, build_pg_view_ddl, determine_pg_extra,
-    filter_pg_schemas, is_pg_system_schema, parse_pg_indexdef,
+    build_pg_column_type, build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_view_ddl,
+    determine_pg_extra, filter_pg_schemas, is_pg_system_schema, parse_pg_indexdef,
 };
 use td_export::model::{ColumnInfo, GeneralInfo, TableDef, ViewInfo};
 
@@ -186,6 +186,7 @@ fn build_pg_table_def(table_name: &str, db_collation: &str, columns: Vec<ColumnI
         indexes: Vec::new(),
         constraints: Vec::new(),
         view: None,
+        ddl_after: Vec::new(),
         ddl: None,
     }
 }
@@ -210,6 +211,7 @@ fn build_pg_view_def(view_name: &str, db_collation: &str, view_query: &str) -> T
             charset: String::new(),
             collate: String::new(),
         }),
+        ddl_after: Vec::new(),
         ddl: None,
     }
 }
@@ -1230,14 +1232,18 @@ fn ddl_foreign_key_keeps_match_and_deferrable_in_grammar_order() {
         },
         columns: vec!["x".to_string()],
     }];
-    let ddl = build_pg_ddl_from_metadata("p", "child", &columns, &constraints, &[]).unwrap();
-    assert!(
-        ddl.contains(
-            "CONSTRAINT \"fk\" FOREIGN KEY (\"x\") REFERENCES \"p\".\"parent\" (\"a\") MATCH FULL \
-             ON DELETE SET NULL ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED"
-        ),
-        "{ddl}"
+    let fks = build_pg_fk_ddl("p", "child", &constraints).unwrap();
+    assert_eq!(
+        fks,
+        [
+            "ALTER TABLE \"p\".\"child\" ADD CONSTRAINT \"fk\" FOREIGN KEY (\"x\") \
+          REFERENCES \"p\".\"parent\" (\"a\") MATCH FULL \
+          ON DELETE SET NULL ON UPDATE CASCADE DEFERRABLE INITIALLY DEFERRED;"
+        ]
     );
+    // CREATE TABLE 쪽에는 FK 가 없다
+    let ddl = build_pg_ddl_from_metadata("p", "child", &columns, &constraints, &[]).unwrap();
+    assert!(!ddl.contains("FOREIGN KEY"), "{ddl}");
 }
 
 #[test]
@@ -1354,10 +1360,17 @@ fn ddl_with_foreign_key() {
         columns: vec!["user_id".to_string()],
     }];
     let ddl = build_pg_ddl_from_metadata("public", "orders", &columns, &constraints, &[]).unwrap();
-    assert!(ddl.contains("FOREIGN KEY (\"user_id\")"));
-    assert!(ddl.contains("REFERENCES \"public\".\"users\" (\"id\")"));
-    assert!(ddl.contains("ON DELETE CASCADE"));
-    assert!(ddl.contains("ON UPDATE NO ACTION"));
+    // FK 는 CREATE TABLE 밖 ALTER TABLE 로 분리된다 (참조 테이블 생성 순서와 무관하게 실행 가능)
+    assert!(!ddl.contains("FOREIGN KEY"), "{ddl}");
+    let fks = build_pg_fk_ddl("public", "orders", &constraints).unwrap();
+    assert_eq!(
+        fks,
+        [
+            "ALTER TABLE \"public\".\"orders\" ADD CONSTRAINT \"orders_user_fk\" \
+          FOREIGN KEY (\"user_id\") REFERENCES \"public\".\"users\" (\"id\") \
+          ON DELETE CASCADE ON UPDATE NO ACTION;"
+        ]
+    );
 }
 
 #[test]
@@ -1420,7 +1433,9 @@ fn ddl_with_multiple_fks_reference_names_resolved() {
             columns: vec!["product_id".to_string()],
         },
     ];
-    let ddl = build_pg_ddl_from_metadata("public", "orders", &columns, &constraints, &[]).unwrap();
+    let ddl = build_pg_fk_ddl("public", "orders", &constraints)
+        .unwrap()
+        .join("\n");
 
     // 첫 번째 FK: user_id → public.users(id) ON DELETE CASCADE
     assert!(
@@ -1449,6 +1464,11 @@ fn ddl_with_multiple_fks_reference_names_resolved() {
     );
     assert!(ddl.contains("\"public\".\"users\""));
     assert!(ddl.contains("\"public\".\"products\""));
+
+    // CREATE TABLE 에는 FK 가 남지 않는다
+    let create =
+        build_pg_ddl_from_metadata("public", "orders", &columns, &constraints, &[]).unwrap();
+    assert!(!create.contains("FOREIGN KEY"), "{create}");
 }
 
 #[test]

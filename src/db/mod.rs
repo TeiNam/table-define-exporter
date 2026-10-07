@@ -15,7 +15,8 @@ use async_trait::async_trait;
 use crate::{
     error::AppError,
     model::{
-        ColumnInfo, ConstInfo, DbType, IndexInfo, RunConfig, SchemaCatalog, TableDef, ViewInfo,
+        ColumnInfo, ConstInfo, DbType, IndexInfo, RunConfig, SchemaCatalog, TableDdl, TableDef,
+        ViewInfo,
     },
 };
 
@@ -44,7 +45,7 @@ pub trait DbClient: Send + Sync {
     async fn get_view_info(&self, schema: &str, table: &str) -> Result<ViewInfo, AppError>;
 
     /// DDL 조회 (SQL 포맷 전용)
-    async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<String, AppError>;
+    async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<TableDdl, AppError>;
 }
 
 /// enum 디스패치로 MySQL/PostgreSQL 클라이언트를 통합
@@ -107,7 +108,7 @@ impl DbClient for DbClientEnum {
         }
     }
 
-    async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<String, AppError> {
+    async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<TableDdl, AppError> {
         match self {
             Self::MySql(c) => c.get_table_ddl(schema, table).await,
             Self::Pg(c) => c.get_table_ddl(schema, table).await,
