@@ -8,7 +8,7 @@ use crate::{error::AppError, identifier::quote_pg_identifier};
 
 use super::parse::{extract_check_expression, parse_fk_actions_from_condef, quote_column_list};
 use super::types::{
-    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, build_pg_column_type,
+    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, build_pg_column_type,
 };
 use crate::db::try_get_or_warn;
 
@@ -20,7 +20,8 @@ use crate::db::try_get_or_warn;
 /// DDL 구조:
 /// ```sql
 /// CREATE TABLE "schema"."table" (
-///     "col" type [NOT NULL] [DEFAULT default] [GENERATED ALWAYS AS (expr) STORED|VIRTUAL],
+///     "col" type [NOT NULL] [GENERATED {ALWAYS|BY DEFAULT} AS IDENTITY [(...)]]
+///         [DEFAULT default] [GENERATED ALWAYS AS (expr) STORED|VIRTUAL],
 ///     CONSTRAINT "pk" PRIMARY KEY (columns),
 ///     CONSTRAINT "uq" UNIQUE (columns),
 ///     CONSTRAINT "fk" FOREIGN KEY (cols) REFERENCES "ref" (ref_cols) ...
@@ -52,6 +53,11 @@ pub fn build_pg_ddl_from_metadata(
         // NOT NULL 제약
         if !col.is_nullable {
             col_def.push_str(" NOT NULL");
+        }
+
+        // identity 컬럼 (identity 와 DEFAULT 는 함께 올 수 없고 column_default 도 NULL)
+        if let Some(identity) = &col.identity {
+            col_def.push_str(&identity.to_sql());
         }
 
         // GENERATED ALWAYS AS (...) STORED|VIRTUAL (기본값보다 우선)
@@ -163,7 +169,10 @@ pub(super) async fn fetch_table_ddl(
              c.is_nullable, \
              c.column_default, \
              a.attgenerated::text AS attgenerated, \
-             c.generation_expression \
+             c.generation_expression, \
+             a.attidentity::text AS attidentity, \
+             s.seqstart AS identity_start, \
+             s.seqincrement AS identity_increment \
          FROM information_schema.columns c \
          JOIN pg_catalog.pg_attribute a \
            ON a.attrelid = ( \
@@ -174,6 +183,9 @@ pub(super) async fn fetch_table_ddl(
            AND a.attname = c.column_name \
            AND a.attnum > 0 \
            AND NOT a.attisdropped \
+         LEFT JOIN pg_catalog.pg_sequence s \
+           ON a.attidentity <> '' \
+          AND s.seqrelid = pg_get_serial_sequence(format('%I.%I', $1, $2), a.attname)::regclass \
          WHERE c.table_schema = $1 AND c.table_name = $2 \
          ORDER BY c.ordinal_position",
     )
@@ -202,6 +214,10 @@ pub(super) async fn fetch_table_ddl(
         let attgenerated: String = try_get_or_warn(row, "attgenerated", schema, table);
         let generation_expression: Option<String> =
             try_get_or_warn(row, "generation_expression", schema, table);
+        let attidentity: String = try_get_or_warn(row, "attidentity", schema, table);
+        let identity_start: Option<i64> = try_get_or_warn(row, "identity_start", schema, table);
+        let identity_increment: Option<i64> =
+            try_get_or_warn(row, "identity_increment", schema, table);
 
         // 컬럼 타입 구성
         let data_type =
@@ -213,6 +229,7 @@ pub(super) async fn fetch_table_ddl(
             is_nullable: is_nullable == "YES",
             default_value: column_default,
             generated: PgGenerated::from_catalog(&attgenerated, generation_expression),
+            identity: PgIdentity::from_catalog(&attidentity, identity_start, identity_increment),
         });
     }
 
