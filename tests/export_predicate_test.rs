@@ -61,7 +61,7 @@ fn make_table_with_index_predicate(predicate: Option<String>) -> TableDef {
     }
 }
 
-/// 테스트용 기본 RunConfig. Markdown 출력은 `endpoint`/`db_type`에 의존하지 않지만
+/// 테스트용 기본 RunConfig. Markdown 출력 내용은 `endpoint`/`db_type`에 의존하지 않지만
 /// Exporter::setup 시그니처가 요구하므로 의미 있는 값을 채워둔다.
 fn make_run_config() -> RunConfig {
     RunConfig {
@@ -79,7 +79,7 @@ fn make_run_config() -> RunConfig {
 
 /// 실제 MarkdownExporter를 실행해 지정된 스키마의 .md 파일 내용을 문자열로 반환한다.
 ///
-/// MarkdownExporter는 현재 작업 디렉터리에 `{schema}.md` 파일을 생성하므로,
+/// MarkdownExporter는 현재 작업 디렉터리에 `{schema}({endpoint}).md` 파일을 생성하므로,
 /// 테스트 간 간섭을 막기 위해 격리된 TempDir로 cwd를 잠시 전환한다.
 ///
 /// 주의: `std::env::set_current_dir`은 프로세스 전역 상태를 변경하므로 병렬 테스트가
@@ -106,7 +106,11 @@ fn render_markdown_to_string(schema: &str, tables: &[TableDef]) -> String {
     let write_result = setup_result.and_then(|_| exporter.write_tables(schema, tables));
     let finish_result = write_result.and_then(|_| exporter.finish());
 
-    let md_path = tmp.path().join(format!("{schema}.md"));
+    let md_path = tmp.path().join(td_export::export::schema_filename(
+        schema,
+        &config.endpoint,
+        "md",
+    ));
     let read_result = finish_result.and_then(|_| {
         fs::read_to_string(&md_path)
             .map_err(|source| td_export::error::AppError::FileWrite { source })
