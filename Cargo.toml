@@ -18,12 +18,12 @@ sqlx = { version = "0.9", features = ["mysql", "postgres", "runtime-tokio", "mac
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = "0.3"
-rust_xlsxwriter = "0.95"
+rust_xlsxwriter = "0.99"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
-rpassword = "6"
+rpassword = "7"
 
 [dev-dependencies]
 proptest = "1"
