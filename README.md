@@ -144,6 +144,8 @@ RUST_LOG=debug ./td-export
 
 ## 지원 데이터베이스
 
+서버가 TLS를 지원하면 자동으로 TLS로 접속합니다 (MySQL `Preferred` / PostgreSQL `Prefer` — 서버 인증서는 검증하지 않음). 덕분에 MySQL 8 기본 인증(`caching_sha2_password`)을 서버 재시작 직후에도 쓸 수 있고, SSL을 강제하는 서버(`hostssl`, RDS `rds.force_ssl` 등)에도 접속됩니다.
+
 ### MySQL
 
 - MySQL 5.7 이상, 기본 포트 3306
