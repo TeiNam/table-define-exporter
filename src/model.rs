@@ -222,15 +222,23 @@ pub struct ColumnInfo {
 impl ColumnInfo {
     /// 정의서에 표시할 기본값.
     /// - 기본값 없음 + nullable → `NULL` (DB 가 암묵적으로 DEFAULT NULL 적용)
-    /// - 기본값 없음 + NOT NULL → 빈칸 (기본값 자체가 없음)
+    /// - 기본값 없음 + NOT NULL, 또는 generated 컬럼 → 빈칸 (기본값 자체가 없음)
     /// - 빈 문자열 기본값 → `''` (NULL 과 구분)
     pub fn display_default(&self) -> &str {
         match self.default_value.as_deref() {
-            None if self.nullable == "YES" => "NULL",
+            None if self.nullable == "YES" && !self.is_generated() => "NULL",
             None => "",
             Some("") => "''",
             Some(v) => v,
         }
+    }
+    /// generated 컬럼 여부. extra 표기는 MySQL/PG 공통으로 `VIRTUAL GENERATED` /
+    /// `STORED GENERATED` (MySQL 은 뒤에 표현식이 붙음). 표현식 기본값을 뜻하는
+    /// MySQL `DEFAULT_GENERATED` 와는 구분한다.
+    fn is_generated(&self) -> bool {
+        self.extra
+            .as_deref()
+            .is_some_and(|e| e.contains("VIRTUAL GENERATED") || e.contains("STORED GENERATED"))
     }
 }
 
