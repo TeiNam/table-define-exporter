@@ -2,7 +2,7 @@
 
 ![Rust](https://img.shields.io/badge/Rust-1.94+-orange.svg)
 ![MySQL](https://img.shields.io/badge/MySQL-5.7+-4479A1.svg)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--17-336791.svg)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--18-336791.svg)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI/CD-2088FF.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
