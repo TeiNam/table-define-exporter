@@ -14,7 +14,7 @@ path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-sqlx = { version = "0.9", features = ["mysql", "postgres", "runtime-tokio", "macros"] }
+sqlx = { version = "0.9", features = ["mysql", "postgres", "runtime-tokio", "macros", "tls-rustls"] }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = "0.3"
