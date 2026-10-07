@@ -8,7 +8,7 @@
 //
 // Validates: Requirements 3.1, 3.2, 3.3
 //
-// 참고: MarkdownExporter는 현재 작업 디렉터리에 {schema}.md 파일을 생성하므로,
+// 참고: MarkdownExporter는 현재 작업 디렉터리에 {schema}({endpoint}).md 파일을 생성하므로,
 // 테스트 간 cwd 간섭을 막기 위해 TempDir + 전역 Mutex 패턴을 사용한다
 // (tests/export_predicate_test.rs와 동일한 패턴).
 
@@ -51,7 +51,7 @@ fn make_view_table(sql: String) -> TableDef {
     }
 }
 
-/// 테스트용 기본 RunConfig. Markdown 경로는 endpoint/db_type에 의존하지 않지만
+/// 테스트용 기본 RunConfig. Markdown 출력 내용은 endpoint/db_type에 의존하지 않지만
 /// Exporter::setup 시그니처가 요구하므로 의미 있는 값을 채워둔다.
 fn make_run_config() -> RunConfig {
     RunConfig {
@@ -69,7 +69,7 @@ fn make_run_config() -> RunConfig {
 
 /// MarkdownExporter로 VIEW가 담긴 단일 테이블을 렌더링하여 결과 문자열을 반환한다.
 ///
-/// MarkdownExporter는 cwd 기준으로 `{schema}.md`를 생성한다. 테스트 프로세스 내의
+/// MarkdownExporter는 cwd 기준으로 `{schema}({endpoint}).md`를 생성한다. 테스트 프로세스 내의
 /// 다른 cwd-의존 테스트와의 레이스를 피하기 위해 전역 Mutex로 직렬화한다.
 fn render_view_markdown(sql: String) -> String {
     static CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -93,7 +93,11 @@ fn render_view_markdown(sql: String) -> String {
     let write_result = setup_result.and_then(|_| exporter.write_tables(schema, &tables));
     let finish_result = write_result.and_then(|_| exporter.finish());
 
-    let md_path = tmp.path().join(format!("{schema}.md"));
+    let md_path = tmp.path().join(td_export::export::schema_filename(
+        schema,
+        &config.endpoint,
+        "md",
+    ));
     let read_result = finish_result.and_then(|_| {
         fs::read_to_string(&md_path)
             .map_err(|source| td_export::error::AppError::FileWrite { source })

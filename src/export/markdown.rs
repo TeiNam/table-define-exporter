@@ -31,10 +31,10 @@ impl Default for MarkdownExporter {
 }
 
 impl Exporter for MarkdownExporter {
-    fn setup(&mut self, catalog: &SchemaCatalog, _config: &RunConfig) -> Result<(), AppError> {
+    fn setup(&mut self, catalog: &SchemaCatalog, config: &RunConfig) -> Result<(), AppError> {
         // 스키마별 .md 파일 생성 (기존 파일 덮어쓰기)
         for schema in catalog.keys() {
-            let filename = format!("{}.md", schema);
+            let filename = super::schema_filename(schema, &config.endpoint, "md");
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)

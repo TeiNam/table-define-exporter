@@ -124,7 +124,7 @@ RUST_LOG=debug ./td-export
 - 테이블별 블록: 테이블명, 설명, 컬럼 정보, 인덱스, 제약 조건, 테이블 정보
 - 뷰(VIEW): View Create SQL 포함
 
-### Markdown (`{schema}.md`)
+### Markdown (`{schema}({endpoint}).md`)
 
 - 스키마별 파일 생성
 - 목차(Table List) 섹션 포함

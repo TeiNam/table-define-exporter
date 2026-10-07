@@ -73,18 +73,7 @@ fn make_view_table(name: &str) -> TableDef {
 // Validates: Requirements 9.1, 10.5, 11.1
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 파일명 생성 함수들 (실제 Exporter 내부 로직과 동일)
-fn markdown_filename(schema: &str) -> String {
-    format!("{}.md", schema)
-}
-
-fn excel_filename(endpoint: &str) -> String {
-    format!("{}.xlsx", endpoint)
-}
-
-fn sql_filename(schema: &str, endpoint: &str) -> String {
-    format!("{}({}).sql", schema, endpoint)
-}
+use td_export::export::schema_filename;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
@@ -98,45 +87,34 @@ proptest! {
         schema in "[a-zA-Z][a-zA-Z0-9_]{0,30}",
         endpoint in "[a-zA-Z0-9._-]{1,50}",
     ) {
-        // Markdown: {schema}.md
-        let md1 = markdown_filename(&schema);
-        let md2 = markdown_filename(&schema);
-        prop_assert_eq!(&md1, &md2, "Markdown 파일명이 비결정적");
-        prop_assert!(md1.ends_with(".md"), "Markdown 파일명이 .md로 끝나지 않음");
-        prop_assert!(md1.starts_with(&schema), "Markdown 파일명이 스키마명으로 시작하지 않음");
-
-        // Excel: {endpoint}.xlsx
-        let xl1 = excel_filename(&endpoint);
-        let xl2 = excel_filename(&endpoint);
-        prop_assert_eq!(&xl1, &xl2, "Excel 파일명이 비결정적");
-        prop_assert!(xl1.ends_with(".xlsx"), "Excel 파일명이 .xlsx로 끝나지 않음");
-        prop_assert!(xl1.starts_with(&endpoint), "Excel 파일명이 엔드포인트로 시작하지 않음");
-
-        // SQL: {schema}({endpoint}).sql
-        let sql1 = sql_filename(&schema, &endpoint);
-        let sql2 = sql_filename(&schema, &endpoint);
-        prop_assert_eq!(&sql1, &sql2, "SQL 파일명이 비결정적");
-        prop_assert!(sql1.ends_with(".sql"), "SQL 파일명이 .sql로 끝나지 않음");
-        prop_assert!(
-            sql1.contains(&schema) && sql1.contains(&endpoint),
-            "SQL 파일명에 스키마 또는 엔드포인트가 없음"
-        );
-        prop_assert_eq!(
-            sql1,
-            format!("{}({}).sql", schema, endpoint),
-            "SQL 파일명 형식이 올바르지 않음"
-        );
+        // Markdown / SQL: {schema}({endpoint}).{ext} — 동일 규칙
+        for ext in ["md", "sql"] {
+            let name1 = schema_filename(&schema, &endpoint, ext);
+            let name2 = schema_filename(&schema, &endpoint, ext);
+            prop_assert_eq!(&name1, &name2, "{} 파일명이 비결정적", ext);
+            prop_assert_eq!(
+                name1,
+                format!("{}({}).{}", schema, endpoint, ext),
+                "{} 파일명 형식이 올바르지 않음",
+                ext
+            );
+        }
     }
 }
 
 // 예시 기반 단위 테스트
 #[test]
 fn filename_determinism_examples() {
-    assert_eq!(markdown_filename("mydb"), "mydb.md");
-    assert_eq!(excel_filename("localhost"), "localhost.xlsx");
-    assert_eq!(sql_filename("mydb", "localhost"), "mydb(localhost).sql");
     assert_eq!(
-        sql_filename("test_db", "192.168.1.1"),
+        schema_filename("mydb", "localhost", "md"),
+        "mydb(localhost).md"
+    );
+    assert_eq!(
+        schema_filename("mydb", "localhost", "sql"),
+        "mydb(localhost).sql"
+    );
+    assert_eq!(
+        schema_filename("test_db", "192.168.1.1", "sql"),
         "test_db(192.168.1.1).sql"
     );
 }

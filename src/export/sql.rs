@@ -95,7 +95,7 @@ impl Exporter for SqlExporter {
 
         // 스키마별 .sql 파일 생성 (기존 파일 덮어쓰기)
         for schema in catalog.keys() {
-            let filename = format!("{}({}).sql", schema, config.endpoint);
+            let filename = super::schema_filename(schema, &config.endpoint, "sql");
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)

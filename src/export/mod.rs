@@ -15,6 +15,11 @@ pub trait Exporter {
     fn finish(&mut self) -> Result<(), AppError>;
 }
 
+/// 스키마별로 분리되는 출력 파일명: `{schema}({endpoint}).{ext}`
+pub fn schema_filename(schema: &str, endpoint: &str, ext: &str) -> String {
+    format!("{schema}({endpoint}).{ext}")
+}
+
 /// 출력 포맷에 맞는 Exporter 인스턴스를 생성하는 팩토리 함수
 pub fn create_exporter(format: OutputFormat) -> Box<dyn Exporter> {
     match format {
