@@ -132,6 +132,7 @@ RUST_LOG=debug ./td-export
 - 목차(Table List) 섹션 포함
 - 테이블별 섹션: 일반 정보, 컬럼 표, 인덱스(파셜 인덱스 `WHERE` 절 포함), 제약 조건
 - 인덱스 종류는 `Normal` / `Unique` / `Fulltext` / `Spatial`로 표시하고, 컬럼에는 내림차순(`DESC`), prefix 길이(`col(10)`), 함수식(`(lower(name))`), PostgreSQL의 `NULLS`·opclass를 그대로 남깁니다 (Excel 동일)
+- 컬럼 기본값: `NULL`(기본값이 NULL), 빈칸(기본값 없음 — NOT NULL·generated 컬럼), 문자열·날짜 리터럴은 `'...'`로 감싸 문자열 `'NULL'`·빈 문자열 `''`과 구분합니다 (Excel 동일)
 - 뷰(VIEW): 뷰 정보 + View Create SQL 코드 블록 (언어 태그 `sql`)
 
 ### SQL (`{schema}({endpoint}).sql`)

@@ -16,6 +16,8 @@ pub struct MySqlClient {
     /// `information_schema.STATISTICS.EXPRESSION`(함수형 인덱스 식) 존재 여부.
     /// MySQL 8.0.13+ 에만 있고 5.7·MariaDB 에는 없다.
     has_index_expression: bool,
+    /// MariaDB 는 `COLUMN_DEFAULT` 를 이미 SQL 리터럴(`'abc'`, `NULL`)로 돌려준다.
+    is_mariadb: bool,
 }
 
 const SYSTEM_SCHEMAS: &[&str] = &[
@@ -69,9 +71,19 @@ impl MySqlClient {
             false
         });
 
+        let is_mariadb = sqlx::query_scalar::<_, String>("SELECT CAST(VERSION() AS CHAR)")
+            .fetch_one(&pool)
+            .await
+            .map(|v| v.contains("MariaDB"))
+            .unwrap_or_else(|e| {
+                tracing::warn!("서버 버전 확인 실패 — MySQL 로 간주: {e}");
+                false
+            });
+
         Ok(Self {
             pool,
             has_index_expression,
+            is_mariadb,
         })
     }
 
@@ -218,11 +230,19 @@ impl MySqlClient {
                 (None, Some(g)) if !g.is_empty() => Some(g),
                 _ => None,
             };
+            let column_type: String = try_get_or_warn(&row, "column_type", schema, table);
+            let default_raw: Option<String> =
+                try_get_or_warn(&row, "column_default", schema, table);
+            let default_value = if self.is_mariadb {
+                default_raw
+            } else {
+                quote_literal_default(default_raw, &column_type, extra_combined.as_deref())
+            };
             columns.push(ColumnInfo {
                 column_name: try_get_or_warn(&row, "column_name", schema, table),
-                default_value: try_get_or_warn(&row, "column_default", schema, table),
+                default_value,
                 nullable: try_get_or_warn(&row, "is_nullable", schema, table),
-                column_type: try_get_or_warn(&row, "column_type", schema, table),
+                column_type,
                 charset: try_get_or_warn(&row, "character_set_name", schema, table),
                 collation: try_get_or_warn(&row, "collation_name", schema, table),
                 column_key: try_get_or_warn(&row, "column_key", schema, table),
@@ -413,6 +433,49 @@ fn ddl_column(row: &sqlx::mysql::MySqlRow, name: &str) -> Option<String> {
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// MySQL `COLUMN_DEFAULT` 를 `SHOW CREATE TABLE` 과 같은 리터럴 표기로 바꾼다.
+///
+/// MySQL 은 문자열 기본값을 따옴표 없이 돌려줘서 `DEFAULT 'NULL'`(문자열) 과
+/// `DEFAULT NULL`, 따옴표 두 개짜리 문자열과 `DEFAULT ''` 를 구분할 수 없다.
+/// 문자열·날짜 타입의 리터럴만 `'...'` 로 감싸고(`'` 는 `''` 로 이스케이프),
+/// 표현식 기본값(`DEFAULT_GENERATED`, 5.7 의 `CURRENT_TIMESTAMP`)과 숫자·bit 는 그대로 둔다.
+pub(crate) fn quote_literal_default(
+    default: Option<String>,
+    column_type: &str,
+    extra: Option<&str>,
+) -> Option<String> {
+    let value = default?;
+    let base_type = column_type
+        .split(['(', ' '])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let is_string = matches!(
+        base_type.as_str(),
+        "char"
+            | "varchar"
+            | "binary"
+            | "varbinary"
+            | "tinytext"
+            | "text"
+            | "mediumtext"
+            | "longtext"
+            | "enum"
+            | "set"
+    );
+    let is_temporal = matches!(
+        base_type.as_str(),
+        "date" | "time" | "datetime" | "timestamp"
+    );
+    let is_expression = extra.is_some_and(|e| e.contains("DEFAULT_GENERATED"))
+        || (is_temporal && value.to_ascii_uppercase().starts_with("CURRENT_TIMESTAMP"));
+    if (is_string || is_temporal) && !is_expression {
+        Some(format!("'{}'", value.replace('\'', "''")))
+    } else {
+        Some(value)
+    }
+}
+
 #[cfg(test)]
 /// 스키마 이름이 시스템 스키마인지 확인
 pub(crate) fn is_system_schema(name: &str) -> bool {
@@ -442,6 +505,46 @@ pub(crate) fn filter_schemas(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn quote_literal_default_distinguishes_string_literals() {
+        let q = |v: &str, ty: &str, extra: Option<&str>| {
+            quote_literal_default(Some(v.to_string()), ty, extra)
+        };
+        // 문자열 리터럴은 따옴표로 감싸 NULL / 빈 문자열과 구분
+        assert_eq!(q("NULL", "varchar(10)", None).as_deref(), Some("'NULL'"));
+        assert_eq!(q("", "varchar(10)", None).as_deref(), Some("''"));
+        assert_eq!(q("''", "varchar(10)", None).as_deref(), Some("''''''"));
+        assert_eq!(q("it's", "varchar(20)", None).as_deref(), Some("'it''s'"));
+        assert_eq!(q("Y", "enum('Y','N')", None).as_deref(), Some("'Y'"));
+        assert_eq!(
+            q("2020-01-01 00:00:00", "datetime", None).as_deref(),
+            Some("'2020-01-01 00:00:00'")
+        );
+        // 숫자·bit 리터럴, 표현식 기본값은 그대로
+        assert_eq!(q("0", "int unsigned", None).as_deref(), Some("0"));
+        assert_eq!(q("b'1'", "bit(1)", None).as_deref(), Some("b'1'"));
+        assert_eq!(
+            q("CURRENT_TIMESTAMP", "datetime", Some("DEFAULT_GENERATED")).as_deref(),
+            Some("CURRENT_TIMESTAMP")
+        );
+        // MySQL 5.7: DEFAULT_GENERATED 표기 없이 CURRENT_TIMESTAMP(3)
+        assert_eq!(
+            q(
+                "CURRENT_TIMESTAMP(3)",
+                "timestamp(3)",
+                Some("on update CURRENT_TIMESTAMP(3)")
+            )
+            .as_deref(),
+            Some("CURRENT_TIMESTAMP(3)")
+        );
+        assert_eq!(
+            q("uuid()", "varchar(36)", Some("DEFAULT_GENERATED")).as_deref(),
+            Some("uuid()")
+        );
+        // 기본값 없음은 그대로 None
+        assert_eq!(quote_literal_default(None, "varchar(10)", None), None);
+    }
 
     // Property 5: 스키마 필터링 정확성 (Schema Filtering Correctness)
     // Validates: Requirements 4.2, 4.4
