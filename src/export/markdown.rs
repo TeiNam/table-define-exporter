@@ -167,6 +167,13 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                 }
                 writeln!(file)?;
             }
+
+            // 원본 CREATE DDL 섹션 — 표에 없는 세부 정보까지 보존
+            if let Some(ddl) = &t.ddl {
+                writeln!(file, "**Create SQL**")?;
+                write_fenced_sql(file, ddl)?;
+                writeln!(file)?;
+            }
         } else if t.general.table_type == "VIEW" {
             // 뷰 정보 표
             writeln!(file, "|Table type|Charset|Collate|")?;
@@ -185,7 +192,7 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
             // View Create SQL 섹션
             writeln!(file, "**View Create SQL**")?;
             if let Some(view) = &t.view {
-                write_view_fenced_sql(file, &view.view_query)?;
+                write_fenced_sql(file, &view.view_query)?;
             }
         }
 
@@ -195,13 +202,13 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
     Ok(())
 }
 
-/// VIEW의 SQL 본문을 언어 태그가 붙은 fenced code block으로 기록한다.
+/// SQL 본문(VIEW 쿼리, CREATE DDL)을 언어 태그가 붙은 fenced code block으로 기록한다.
 ///
 /// Requirements 3.1/3.2/3.3 준수:
 /// - 빈 줄 → 열기 펜스 라인(```sql) → SQL 본문 → 닫기 펜스 라인을 각각 별도 줄로 출력
 /// - 한 줄 안에 언어 태그와 본문을 함께 배치하지 않는다
 /// - 본문에 포함된 최장 연속 백틱 길이가 `m`일 때 펜스 길이는 `max(3, m + 1)`
-fn write_view_fenced_sql(file: &mut File, sql: &str) -> std::io::Result<()> {
+fn write_fenced_sql(file: &mut File, sql: &str) -> std::io::Result<()> {
     let fence_len = max(3, longest_backtick_run(sql) + 1);
     let fence: String = "`".repeat(fence_len);
 
