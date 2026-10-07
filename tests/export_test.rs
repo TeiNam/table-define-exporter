@@ -73,7 +73,7 @@ fn make_view_table(name: &str) -> TableDef {
 // Validates: Requirements 9.1, 10.5, 11.1
 // ─────────────────────────────────────────────────────────────────────────────
 
-use td_export::export::schema_filename;
+use td_export::export::{schema_filename, workbook_filename};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
@@ -100,6 +100,38 @@ proptest! {
             );
         }
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    /// 어떤 스키마명/endpoint 가 와도 출력 파일명은 cwd 안의 단일 파일 경로여야 하고
+    /// Windows 예약 문자를 포함하지 않아야 한다.
+    #[test]
+    fn filenames_are_single_safe_path_component(
+        schema in "\\PC{0,20}",
+        endpoint in "\\PC{0,20}",
+    ) {
+        for name in [schema_filename(&schema, &endpoint, "md"), workbook_filename(&endpoint)] {
+            let path = std::path::Path::new(&name);
+            prop_assert_eq!(path.components().count(), 1, "경로 구분자 포함: {}", name);
+            prop_assert!(
+                !name.chars().any(|c| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control()),
+                "파일명에 쓸 수 없는 문자 포함: {:?}", name
+            );
+        }
+    }
+}
+
+#[test]
+fn filenames_replace_unsafe_characters() {
+    assert_eq!(schema_filename("x/y", "::1", "md"), "x_y(__1).md");
+    assert_eq!(
+        schema_filename("../evil", "/tmp", "sql"),
+        ".._evil(_tmp).sql"
+    );
+    assert_eq!(workbook_filename("::1"), "__1.xlsx");
+    assert_eq!(workbook_filename("db.example.com"), "db.example.com.xlsx");
 }
 
 // 예시 기반 단위 테스트
