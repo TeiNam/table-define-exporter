@@ -2,7 +2,7 @@
 
 ![Rust](https://img.shields.io/badge/Rust-1.94+-orange.svg)
 ![MySQL](https://img.shields.io/badge/MySQL-5.7+-4479A1.svg)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--17-336791.svg)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13--18-336791.svg)
 ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI/CD-2088FF.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -155,7 +155,7 @@ RUST_LOG=debug ./td-export
 
 ### PostgreSQL
 
-- PostgreSQL 13, 14, 15, 16, 17 지원, 기본 포트 5432
+- PostgreSQL 13, 14, 15, 16, 17, 18 지원, 기본 포트 5432
 - `information_schema` + `pg_catalog`에서 메타데이터 수집
 - DDL 재구성 방식 (FK 해석은 단일 JOIN 쿼리로 처리 — N+1 없음)
 - 큰따옴표(`"`) 식별자 인용
