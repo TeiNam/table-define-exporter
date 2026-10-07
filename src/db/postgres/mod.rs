@@ -147,15 +147,17 @@ impl PgClient {
         schema: &str,
         except: &[String],
     ) -> Result<Vec<TableDef>, AppError> {
+        // pg_class 는 반드시 스키마(namespace)까지 맞춰 조인한다. 이름만으로 조인하면
+        // 다른 스키마의 같은 이름 테이블 수만큼 행이 늘고 코멘트도 섞인다.
         // 동적 쿼리 구성: except_tables LIKE 패턴 추가
         let mut query_str = String::from(
             "SELECT t.table_name, t.table_type, \
                     obj_description(c.oid, 'pg_class') AS table_comment \
              FROM information_schema.tables t \
-             LEFT JOIN pg_catalog.pg_class c \
-               ON c.relname = t.table_name \
              LEFT JOIN pg_catalog.pg_namespace n \
-               ON n.oid = c.relnamespace AND n.nspname = t.table_schema \
+               ON n.nspname = t.table_schema \
+             LEFT JOIN pg_catalog.pg_class c \
+               ON c.relnamespace = n.oid AND c.relname = t.table_name \
              WHERE t.table_schema = $1",
         );
 
