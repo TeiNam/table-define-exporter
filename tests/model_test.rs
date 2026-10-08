@@ -513,10 +513,17 @@ fn index_kind_label() {
         index_columns: "c".to_string(),
         predicate: None,
         index_type: index_type.map(str::to_string),
+        include_columns: None,
     };
     assert_eq!(idx(1, Some("FULLTEXT")).kind_label(), "Fulltext");
     assert_eq!(idx(1, Some("SPATIAL")).kind_label(), "Spatial");
     assert_eq!(idx(1, Some("EXCLUDE")).kind_label(), "Exclude");
+    // PostgreSQL 인덱스 방식 (B-tree 가 아닌 것만 방식으로 표시)
+    assert_eq!(idx(1, Some("GIN")).kind_label(), "GIN");
+    assert_eq!(idx(1, Some("GIST")).kind_label(), "GiST");
+    assert_eq!(idx(1, Some("BRIN")).kind_label(), "BRIN");
+    assert_eq!(idx(1, Some("HASH")).kind_label(), "Hash");
+    assert_eq!(idx(0, Some("BTREE")).kind_label(), "Unique");
     assert_eq!(idx(0, Some("BTREE")).kind_label(), "Unique");
     assert_eq!(idx(1, Some("BTREE")).kind_label(), "Normal");
     assert_eq!(idx(0, None).kind_label(), "Unique");

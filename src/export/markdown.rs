@@ -140,6 +140,10 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                         idx.index_name,
                         idx.index_columns
                     )?;
+                    // 커버링 인덱스(PostgreSQL): INCLUDE 컬럼
+                    if let Some(include) = &idx.include_columns {
+                        write!(file, " INCLUDE ({})", include)?;
+                    }
                     // 파셜 인덱스(partial index): predicate가 존재하면 " WHERE <predicate>" 추가
                     if let Some(pred) = &idx.predicate {
                         write!(file, " WHERE {}", pred)?;

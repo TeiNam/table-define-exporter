@@ -309,6 +309,7 @@ impl MySqlClient {
                 index_columns: try_get_or_warn(&row, "index_columns", schema, table),
                 predicate: None,
                 index_type: try_get_or_warn(&row, "index_type", schema, table),
+                include_columns: None,
             });
         }
         Ok(indexes)
