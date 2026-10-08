@@ -1096,7 +1096,7 @@ fn ddl_foreign_key_keeps_match_and_deferrable_in_grammar_order() {
 
 #[test]
 fn materialized_view_ddl_with_no_data() {
-    let ddl = build_pg_materialized_view_ddl("a", "mv", " SELECT t.id\n   FROM a.t;").unwrap();
+    let ddl = build_pg_materialized_view_ddl("a", "mv", " SELECT t.id\n   FROM a.t;", &[]).unwrap();
     assert_eq!(
         ddl,
         "CREATE MATERIALIZED VIEW \"a\".\"mv\" AS\n SELECT t.id\n   FROM a.t\nWITH NO DATA;\n"
@@ -1106,9 +1106,24 @@ fn materialized_view_ddl_with_no_data() {
 #[test]
 fn view_ddl_uses_create_view() {
     // pg_get_viewdef 는 앞 공백 + 끝 세미콜론을 포함한다
-    let ddl = build_pg_view_ddl("s2", "v", " SELECT 1 AS x;").unwrap();
+    let ddl = build_pg_view_ddl("s2", "v", " SELECT 1 AS x;", &[]).unwrap();
     assert_eq!(ddl, "CREATE VIEW \"s2\".\"v\" AS\n SELECT 1 AS x;\n");
-    assert!(build_pg_view_ddl("s;x", "v", " SELECT 1;").is_err());
+    assert!(build_pg_view_ddl("s;x", "v", " SELECT 1;", &[]).is_err());
+    // 보안·갱신 옵션: WITH (..) 는 이름 뒤, CHECK OPTION 은 끝에
+    let ddl = build_pg_view_ddl(
+        "s2",
+        "chk",
+        " SELECT id FROM s2.base WHERE (n > 0);",
+        &[
+            "security_barrier=true".to_string(),
+            "check_option=cascaded".to_string(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        ddl,
+        "CREATE VIEW \"s2\".\"chk\" WITH (security_barrier=true) AS\n SELECT id FROM s2.base WHERE (n > 0)\nWITH CASCADED CHECK OPTION;\n"
+    );
 }
 
 #[test]
