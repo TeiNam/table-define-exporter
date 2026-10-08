@@ -6,7 +6,7 @@
 
 use crate::{error::AppError, identifier::quote_pg_identifier, model::TableDdl};
 
-use super::parse::{extract_check_expression, parse_fk_options, quote_column_list};
+use super::parse::{extract_check_expression, quote_column_list};
 use super::types::{PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity};
 use crate::db::try_get_or_warn;
 
@@ -111,41 +111,23 @@ fn build_table_ddl(
         entries.push(col_def);
     }
 
-    // 제약 조건 추가 (PK → UQ → CK 순서, FK 는 build_pg_fk_ddl)
-    for c in constraints
+    // 제약 조건 추가 (PK → UQ → CK → EXCLUDE 순서, FK 는 build_pg_fk_ddl)
+    let order = |c: &PgDdlConstraint| match c.constraint_type {
+        PgConstraintType::PrimaryKey => Some(0),
+        PgConstraintType::Unique => Some(1),
+        PgConstraintType::Check { .. } => Some(2),
+        PgConstraintType::Exclude { .. } => Some(3),
+        PgConstraintType::ForeignKey { .. } => None,
+    };
+    // NOT VALID 제약은 CREATE TABLE 안에 두면 빈 테이블이라 곧바로 검증돼 상태가 바뀌므로
+    // build_pg_fk_ddl 이 ALTER TABLE .. NOT VALID 로 뒤에서 추가한다 (pg_dump 와 동일)
+    let mut inline: Vec<&PgDdlConstraint> = constraints
         .iter()
-        .filter(|c| matches!(c.constraint_type, PgConstraintType::PrimaryKey))
-    {
-        let quoted_name = quote_pg_identifier(&c.name)?;
-        let cols = quote_column_list(&c.columns)?;
-        entries.push(format!("    CONSTRAINT {quoted_name} PRIMARY KEY ({cols})"));
-    }
-
-    for c in constraints
-        .iter()
-        .filter(|c| matches!(c.constraint_type, PgConstraintType::Unique))
-    {
-        let quoted_name = quote_pg_identifier(&c.name)?;
-        let cols = quote_column_list(&c.columns)?;
-        entries.push(format!("    CONSTRAINT {quoted_name} UNIQUE ({cols})"));
-    }
-
-    for c in constraints
-        .iter()
-        .filter(|c| matches!(c.constraint_type, PgConstraintType::Check { .. }))
-    {
-        if let PgConstraintType::Check { ref expression } = c.constraint_type {
-            let quoted_name = quote_pg_identifier(&c.name)?;
-            entries.push(format!("    CONSTRAINT {quoted_name} CHECK ({expression})"));
-        }
-    }
-
-    // EXCLUDE 는 제약 자체를 출력한다 (제약이 만든 인덱스는 index_defs 에서 제외됨)
-    for c in constraints {
-        if let PgConstraintType::Exclude { ref definition } = c.constraint_type {
-            let quoted_name = quote_pg_identifier(&c.name)?;
-            entries.push(format!("    CONSTRAINT {quoted_name} {definition}"));
-        }
+        .filter(|c| order(c).is_some() && !is_not_valid(c))
+        .collect();
+    inline.sort_by_key(|c| order(c));
+    for c in inline {
+        entries.push(format!("    {}", constraint_clause(c)?));
     }
 
     // 엔트리들을 쉼표+개행으로 결합
@@ -167,6 +149,31 @@ fn build_table_ddl(
     }
 
     Ok(ddl)
+}
+
+/// `NOT VALID` 로 만든(아직 검증하지 않은) 제약인가
+fn is_not_valid(c: &PgDdlConstraint) -> bool {
+    c.definition
+        .as_deref()
+        .is_some_and(|d| d.ends_with(" NOT VALID"))
+}
+
+/// `CONSTRAINT "name" ...` 절 (PK/UNIQUE/CHECK/EXCLUDE). 카탈로그 원문이 있으면 그대로 쓰고,
+/// 이름·컬럼은 원문을 쓸 때도 위험 식별자 정책대로 검증한다.
+fn constraint_clause(c: &PgDdlConstraint) -> Result<String, AppError> {
+    let quoted_name = quote_pg_identifier(&c.name)?;
+    let cols = quote_column_list(&c.columns)?;
+    let body = match (&c.definition, &c.constraint_type) {
+        (Some(definition), _) => definition.clone(),
+        (None, PgConstraintType::PrimaryKey) => format!("PRIMARY KEY ({cols})"),
+        (None, PgConstraintType::Unique) => format!("UNIQUE ({cols})"),
+        (None, PgConstraintType::Check { expression }) => format!("CHECK ({expression})"),
+        (None, PgConstraintType::Exclude { definition }) => definition.clone(),
+        (None, PgConstraintType::ForeignKey { .. }) => {
+            unreachable!("FK 는 build_pg_fk_ddl 에서 ALTER TABLE 로 만든다")
+        }
+    };
+    Ok(format!("CONSTRAINT {quoted_name} {body}"))
 }
 
 /// 인덱스 정의처럼 `;` 없이 온 문장에 종결자를 붙인다.
@@ -197,7 +204,7 @@ fn append_statements(ddl: &mut String, statements: &[String]) {
     }
 }
 
-/// FK 제약 조건을 `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ...;` 문장으로 만든다.
+/// FK 와 NOT VALID CHECK 를 `ALTER TABLE ... ADD CONSTRAINT ...;` 문장으로 만든다.
 ///
 /// FK 를 CREATE TABLE 안에 두면 참조 테이블이 먼저 있어야 해서, 테이블명 순으로 출력한
 /// SQL 파일을 그대로 실행할 수 없다. pg_dump 처럼 모든 테이블을 만든 뒤 추가한다.
@@ -209,6 +216,16 @@ pub fn build_pg_fk_ddl(
     let quoted_schema = quote_pg_identifier(schema)?;
     let quoted_table = quote_pg_identifier(table)?;
     let mut statements = Vec::new();
+    // 아직 검증하지 않은(NOT VALID) CHECK 는 테이블 생성 뒤에 그 상태 그대로 추가한다
+    for c in constraints
+        .iter()
+        .filter(|c| matches!(c.constraint_type, PgConstraintType::Check { .. }) && is_not_valid(c))
+    {
+        statements.push(format!(
+            "ALTER TABLE {quoted_schema}.{quoted_table} ADD {};",
+            constraint_clause(c)?
+        ));
+    }
     for c in constraints {
         let PgConstraintType::ForeignKey {
             ref_schema,
@@ -227,20 +244,29 @@ pub fn build_pg_fk_ddl(
         let quoted_ref_schema = quote_pg_identifier(ref_schema)?;
         let quoted_ref_table = quote_pg_identifier(ref_table)?;
         let ref_cols = quote_column_list(ref_columns)?;
-        // 문법 순서: REFERENCES .. [MATCH x] [ON DELETE] [ON UPDATE] [DEFERRABLE ..]
-        let match_clause = match_type
-            .as_deref()
-            .map(|m| format!(" MATCH {m}"))
-            .unwrap_or_default();
-        let deferrable_clause = deferrable
-            .as_deref()
-            .map(|d| format!(" {d}"))
-            .unwrap_or_default();
+        // 카탈로그 원문(검색 경로가 비어 있어 참조 테이블도 스키마로 한정됨)을 그대로 쓴다.
+        // ALTER TABLE ADD CONSTRAINT 는 NOT VALID·NOT ENFORCED 도 받아들인다.
+        let body = match &c.definition {
+            Some(definition) => definition.clone(),
+            None => {
+                // 문법 순서: REFERENCES .. [MATCH x] [ON DELETE] [ON UPDATE] [DEFERRABLE ..]
+                let match_clause = match_type
+                    .as_deref()
+                    .map(|m| format!(" MATCH {m}"))
+                    .unwrap_or_default();
+                let deferrable_clause = deferrable
+                    .as_deref()
+                    .map(|d| format!(" {d}"))
+                    .unwrap_or_default();
+                format!(
+                    "FOREIGN KEY ({local_cols}) \
+                     REFERENCES {quoted_ref_schema}.{quoted_ref_table} ({ref_cols}){match_clause} \
+                     ON DELETE {on_delete} ON UPDATE {on_update}{deferrable_clause}"
+                )
+            }
+        };
         statements.push(format!(
-            "ALTER TABLE {quoted_schema}.{quoted_table} ADD CONSTRAINT {quoted_name} \
-             FOREIGN KEY ({local_cols}) \
-             REFERENCES {quoted_ref_schema}.{quoted_ref_table} ({ref_cols}){match_clause} \
-             ON DELETE {on_delete} ON UPDATE {on_update}{deferrable_clause};"
+            "ALTER TABLE {quoted_schema}.{quoted_table} ADD CONSTRAINT {quoted_name} {body};"
         ));
     }
     Ok(statements)
@@ -469,6 +495,11 @@ pub(super) async fn fetch_constraints(
                   AND NOT a.attisdropped \
              ) AS ref_col_names, \
              pg_get_constraintdef(con.oid) AS condef, \
+             con.confdeltype::text AS delete_code, \
+             con.confupdtype::text AS update_code, \
+             con.confmatchtype::text AS match_code, \
+             con.condeferrable, \
+             con.condeferred, \
              ref_ns.nspname AS ref_schema, \
              ref_cl.relname AS ref_table \
          FROM pg_catalog.pg_constraint con \
@@ -524,19 +555,31 @@ pub(super) async fn fetch_constraints(
             "p" => PgConstraintType::PrimaryKey,
             "u" => PgConstraintType::Unique,
             "f" => {
-                // MATCH / ON DELETE / ON UPDATE / DEFERRABLE 추출
-                // (NOT VALID 는 CREATE TABLE 문법에 없으므로 버린다)
-                let options = parse_fk_options(&condef);
-
+                // 정의서 표시용 동작은 문자열 파싱 대신 카탈로그 코드에서 바로 읽는다
+                // (DDL 은 condef 원문을 쓰므로 여기 값은 표시에만 쓰인다)
+                let code = |column: &str| -> String { try_get_or_warn(row, column, schema, table) };
+                let deferrable: bool = try_get_or_warn(row, "condeferrable", schema, table);
+                let deferred: bool = try_get_or_warn(row, "condeferred", schema, table);
                 PgConstraintType::ForeignKey {
                     ref_schema: ref_schema.unwrap_or_default(),
                     ref_table: ref_table.unwrap_or_default(),
                     // 참조 컬럼 이름도 서브쿼리로 이미 해석됨 → 추가 쿼리 없음
                     ref_columns: ref_col_names.unwrap_or_default(),
-                    on_delete: options.on_delete,
-                    on_update: options.on_update,
-                    match_type: options.match_type,
-                    deferrable: options.deferrable,
+                    on_delete: fk_action(&code("delete_code")),
+                    on_update: fk_action(&code("update_code")),
+                    match_type: match code("match_code").as_str() {
+                        "f" => Some("FULL".to_string()),
+                        "p" => Some("PARTIAL".to_string()),
+                        _ => None,
+                    },
+                    deferrable: deferrable.then(|| {
+                        if deferred {
+                            "DEFERRABLE INITIALLY DEFERRED"
+                        } else {
+                            "DEFERRABLE"
+                        }
+                        .to_string()
+                    }),
                 }
             }
             "c" => {
@@ -545,7 +588,9 @@ pub(super) async fn fetch_constraints(
                 let expression = extract_check_expression(&condef);
                 PgConstraintType::Check { expression }
             }
-            "x" => PgConstraintType::Exclude { definition: condef },
+            "x" => PgConstraintType::Exclude {
+                definition: condef.clone(),
+            },
             _ => continue,
         };
 
@@ -553,6 +598,7 @@ pub(super) async fn fetch_constraints(
             name: conname,
             constraint_type,
             columns: local_columns,
+            definition: Some(condef),
         });
     }
 
@@ -595,4 +641,16 @@ async fn fetch_index_defs(
         .map(|row| try_get_or_warn::<_, String>(row, "indexdef", schema, table))
         .filter(|s| !s.is_empty())
         .collect())
+}
+
+/// `pg_constraint.confdeltype` / `confupdtype` 코드 → 정의서 표기
+fn fk_action(code: &str) -> String {
+    match code {
+        "r" => "RESTRICT",
+        "c" => "CASCADE",
+        "n" => "SET NULL",
+        "d" => "SET DEFAULT",
+        _ => "NO ACTION",
+    }
+    .to_string()
 }

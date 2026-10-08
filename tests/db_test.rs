@@ -1077,6 +1077,7 @@ fn ddl_foreign_key_keeps_match_and_deferrable_in_grammar_order() {
             deferrable: Some("DEFERRABLE INITIALLY DEFERRED".to_string()),
         },
         columns: vec!["x".to_string()],
+        definition: None,
     }];
     let fks = build_pg_fk_ddl("p", "child", &constraints).unwrap();
     assert_eq!(
@@ -1126,6 +1127,7 @@ fn ddl_with_exclude_constraint_and_not_null_named_check() {
                 expression: "(id IS NOT NULL)".to_string(),
             },
             columns: vec![],
+            definition: None,
         },
         PgDdlConstraint {
             name: "room_no_overlap".to_string(),
@@ -1133,6 +1135,7 @@ fn ddl_with_exclude_constraint_and_not_null_named_check() {
                 definition: "EXCLUDE USING gist (during WITH &&)".to_string(),
             },
             columns: vec![],
+            definition: None,
         },
     ];
     let ddl = build_pg_ddl_from_metadata("a", "room", &columns, &constraints, &[]).unwrap();
@@ -1145,6 +1148,74 @@ fn ddl_with_exclude_constraint_and_not_null_named_check() {
         ddl.contains("CONSTRAINT \"room_no_overlap\" EXCLUDE USING gist (during WITH &&)"),
         "{ddl}"
     );
+}
+
+#[test]
+fn catalog_constraint_definitions_are_used_verbatim() {
+    let columns = vec![PgDdlColumn {
+        name: "id".to_string(),
+        data_type: "integer".to_string(),
+        is_nullable: false,
+        default_value: None,
+        generated: None,
+        identity: None,
+    }];
+    let pk = PgDdlConstraint {
+        name: "tp_pkey".to_string(),
+        constraint_type: PgConstraintType::PrimaryKey,
+        columns: vec!["id".to_string(), "during".to_string()],
+        definition: Some("PRIMARY KEY (id, during WITHOUT OVERLAPS)".to_string()),
+    };
+    let fk = PgDdlConstraint {
+        name: "fk_ne".to_string(),
+        constraint_type: PgConstraintType::ForeignKey {
+            ref_schema: "v".to_string(),
+            ref_table: "base".to_string(),
+            ref_columns: vec!["id".to_string()],
+            on_delete: "CASCADE".to_string(),
+            on_update: "NO ACTION".to_string(),
+            match_type: None,
+            deferrable: None,
+        },
+        columns: vec!["bid".to_string()],
+        definition: Some(
+            "FOREIGN KEY (bid) REFERENCES v.base(id) ON DELETE CASCADE NOT ENFORCED".to_string(),
+        ),
+    };
+    let ddl =
+        build_pg_ddl_from_metadata("v", "tp", &columns, &[pk.clone(), fk.clone()], &[]).unwrap();
+    assert!(
+        ddl.contains("CONSTRAINT \"tp_pkey\" PRIMARY KEY (id, during WITHOUT OVERLAPS)"),
+        "{ddl}"
+    );
+    assert_eq!(
+        build_pg_fk_ddl("v", "ref", &[fk]).unwrap(),
+        [
+            "ALTER TABLE \"v\".\"ref\" ADD CONSTRAINT \"fk_ne\" FOREIGN KEY (bid) REFERENCES v.base(id) ON DELETE CASCADE NOT ENFORCED;"
+        ]
+    );
+    // NOT VALID CHECK 는 CREATE TABLE 이 아니라 ALTER TABLE 로 (검증 안 됨 상태 보존)
+    let nv = PgDdlConstraint {
+        name: "ck_nv".to_string(),
+        constraint_type: PgConstraintType::Check {
+            expression: "(id > 0)".to_string(),
+        },
+        columns: vec![],
+        definition: Some("CHECK ((id > 0)) NOT VALID".to_string()),
+    };
+    let ddl =
+        build_pg_ddl_from_metadata("v", "t", &columns, std::slice::from_ref(&nv), &[]).unwrap();
+    assert!(!ddl.contains("ck_nv"), "{ddl}");
+    assert_eq!(
+        build_pg_fk_ddl("v", "t", &[nv]).unwrap(),
+        ["ALTER TABLE \"v\".\"t\" ADD CONSTRAINT \"ck_nv\" CHECK ((id > 0)) NOT VALID;"]
+    );
+    // 원문을 써도 이름·컬럼의 위험 식별자는 거부
+    let bad = PgDdlConstraint {
+        name: "x;y".to_string(),
+        ..pk
+    };
+    assert!(build_pg_ddl_from_metadata("v", "tp", &columns, &[bad], &[]).is_err());
 }
 
 #[test]
@@ -1205,6 +1276,7 @@ fn ddl_with_primary_key() {
         name: "users_pkey".to_string(),
         constraint_type: PgConstraintType::PrimaryKey,
         columns: vec!["id".to_string()],
+        definition: None,
     }];
     let ddl = build_pg_ddl_from_metadata("public", "users", &columns, &constraints, &[]).unwrap();
     assert!(ddl.contains("CONSTRAINT \"users_pkey\" PRIMARY KEY (\"id\")"));
@@ -1224,6 +1296,7 @@ fn ddl_with_unique_constraint() {
         name: "users_email_key".to_string(),
         constraint_type: PgConstraintType::Unique,
         columns: vec!["email".to_string()],
+        definition: None,
     }];
     let ddl = build_pg_ddl_from_metadata("public", "users", &columns, &constraints, &[]).unwrap();
     assert!(ddl.contains("CONSTRAINT \"users_email_key\" UNIQUE (\"email\")"));
@@ -1251,6 +1324,7 @@ fn ddl_with_foreign_key() {
             deferrable: None,
         },
         columns: vec!["user_id".to_string()],
+        definition: None,
     }];
     let ddl = build_pg_ddl_from_metadata("public", "orders", &columns, &constraints, &[]).unwrap();
     // FK 는 CREATE TABLE 밖 ALTER TABLE 로 분리된다 (참조 테이블 생성 순서와 무관하게 실행 가능)
@@ -1311,6 +1385,7 @@ fn ddl_with_multiple_fks_reference_names_resolved() {
                 deferrable: None,
             },
             columns: vec!["user_id".to_string()],
+            definition: None,
         },
         PgDdlConstraint {
             name: "orders_product_fk".to_string(),
@@ -1324,6 +1399,7 @@ fn ddl_with_multiple_fks_reference_names_resolved() {
                 deferrable: None,
             },
             columns: vec!["product_id".to_string()],
+            definition: None,
         },
     ];
     let ddl = build_pg_fk_ddl("public", "orders", &constraints)
@@ -1380,6 +1456,7 @@ fn ddl_with_check_constraint() {
             expression: "(age > 0)".to_string(),
         },
         columns: vec![],
+        definition: None,
     }];
     let ddl = build_pg_ddl_from_metadata("public", "users", &columns, &constraints, &[]).unwrap();
     assert!(ddl.contains("CONSTRAINT \"users_age_check\" CHECK ((age > 0))"));
@@ -1419,16 +1496,19 @@ fn ddl_constraint_ordering_pk_uq_fk_ck() {
                 expression: "(id > 0)".to_string(),
             },
             columns: vec![],
+            definition: None,
         },
         PgDdlConstraint {
             name: "tbl_pkey".to_string(),
             constraint_type: PgConstraintType::PrimaryKey,
             columns: vec!["id".to_string()],
+            definition: None,
         },
         PgDdlConstraint {
             name: "tbl_uq".to_string(),
             constraint_type: PgConstraintType::Unique,
             columns: vec!["id".to_string()],
+            definition: None,
         },
     ];
     let ddl = build_pg_ddl_from_metadata("public", "tbl", &columns, &constraints, &[]).unwrap();
@@ -1585,6 +1665,7 @@ proptest! {
                 name: format!("{table}_pkey"),
                 constraint_type: PgConstraintType::PrimaryKey,
                 columns: vec![col_names[0].clone()],
+                definition: None,
             });
         }
         if constraint_count > 1 {
@@ -1592,6 +1673,7 @@ proptest! {
                 name: format!("{table}_uq"),
                 constraint_type: PgConstraintType::Unique,
                 columns: vec![col_names[0].clone()],
+                definition: None,
             });
         }
         if constraint_count > 2 {
@@ -1601,6 +1683,7 @@ proptest! {
                     expression: "(id > 0)".to_string(),
                 },
                 columns: vec![],
+                definition: None,
             });
         }
 

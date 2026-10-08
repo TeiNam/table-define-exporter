@@ -225,84 +225,6 @@ fn clean_index_column(col_expr: &str) -> String {
         .join(" ")
 }
 
-/// `pg_get_constraintdef` 출력에서 FK 액션을 추출한다.
-///
-/// 예: "FOREIGN KEY (col) REFERENCES tbl(ref_col) ON DELETE CASCADE ON UPDATE SET NULL"
-/// → ("CASCADE", "SET NULL")
-pub(super) fn parse_fk_options(condef: &str) -> FkOptions {
-    // PG 는 `... REFERENCES t(cols) [MATCH x] [ON UPDATE a] [ON DELETE b] [DEFERRABLE]
-    // [INITIALLY DEFERRED] [NOT VALID]` 순으로 출력한다 (ON UPDATE 가 ON DELETE 보다 먼저).
-    // 각 절은 다음 키워드 직전까지만 읽는다 — 예전 구현은 ON UPDATE 뒤를 문자열 끝까지 읽어
-    // `ON UPDATE CASCADE ON DELETE SET NULL` 이 되어 DDL 에 ON DELETE 가 두 번 들어갔다.
-    const KEYWORDS: [&str; 6] = [
-        "MATCH ",
-        "ON UPDATE ",
-        "ON DELETE ",
-        "DEFERRABLE",
-        "INITIALLY ",
-        "NOT VALID",
-    ];
-    let tail = fk_options_tail(condef);
-    let upper = tail.to_ascii_uppercase();
-    let mut starts: Vec<usize> = KEYWORDS.iter().filter_map(|k| upper.find(k)).collect();
-    starts.sort_unstable();
-    let clause = |keyword: &str| -> Option<String> {
-        let start = upper.find(keyword)?;
-        let end = starts
-            .iter()
-            .copied()
-            .find(|&s| s > start)
-            .unwrap_or(tail.len());
-        Some(tail[start + keyword.len()..end].trim().to_string())
-    };
-    let action = |keyword: &str| clause(keyword).unwrap_or_else(|| "NO ACTION".to_string());
-    let deferrable = clause("DEFERRABLE").map(|_| {
-        match clause("INITIALLY ").as_deref() {
-            Some("DEFERRED") => "DEFERRABLE INITIALLY DEFERRED",
-            _ => "DEFERRABLE",
-        }
-        .to_string()
-    });
-    FkOptions {
-        match_type: clause("MATCH "),
-        on_delete: action("ON DELETE "),
-        on_update: action("ON UPDATE "),
-        deferrable,
-    }
-}
-
-/// `pg_get_constraintdef` 의 FK 옵션 (기본값인 MATCH SIMPLE / NOT DEFERRABLE 은 None)
-#[derive(Debug, PartialEq)]
-pub(super) struct FkOptions {
-    pub match_type: Option<String>,
-    pub on_delete: String,
-    pub on_update: String,
-    pub deferrable: Option<String>,
-}
-
-/// `FOREIGN KEY (..) REFERENCES t(cols)` 뒤의 옵션 부분. 따옴표 식별자 안의 괄호는 무시한다.
-fn fk_options_tail(condef: &str) -> &str {
-    let Some(refs) = condef.find("REFERENCES ") else {
-        return "";
-    };
-    let mut depth = 0;
-    let mut in_quotes = false;
-    for (i, c) in condef[refs..].char_indices() {
-        match c {
-            '"' => in_quotes = !in_quotes,
-            '(' if !in_quotes => depth += 1,
-            ')' if !in_quotes => {
-                depth -= 1;
-                if depth == 0 {
-                    return condef[refs + i + 1..].trim_start();
-                }
-            }
-            _ => {}
-        }
-    }
-    ""
-}
-
 /// `pg_get_constraintdef` 출력에서 CHECK 표현식을 추출한다.
 ///
 /// 예: "CHECK ((age > 0))" → "(age > 0)"
@@ -348,38 +270,6 @@ mod tests {
         assert_eq!(gin.include, None);
         assert_eq!(gin.predicate, None);
     }
-
-    #[test]
-    fn parse_fk_options_reads_each_clause_up_to_next_keyword() {
-        // PG 18 실측: ON UPDATE 가 ON DELETE 보다 먼저 온다
-        let opts = parse_fk_options(
-            "FOREIGN KEY (x, y) REFERENCES p.parent(a, b) ON UPDATE CASCADE ON DELETE SET NULL",
-        );
-        assert_eq!(opts.on_update, "CASCADE");
-        assert_eq!(opts.on_delete, "SET NULL");
-        assert_eq!(opts.match_type, None);
-        assert_eq!(opts.deferrable, None);
-
-        let opts = parse_fk_options(
-            "FOREIGN KEY (o) REFERENCES q.other(id) MATCH FULL ON DELETE SET NULL (o) \
-             DEFERRABLE INITIALLY DEFERRED NOT VALID",
-        );
-        assert_eq!(opts.match_type.as_deref(), Some("FULL"));
-        assert_eq!(opts.on_delete, "SET NULL (o)");
-        assert_eq!(opts.on_update, "NO ACTION");
-        assert_eq!(
-            opts.deferrable.as_deref(),
-            Some("DEFERRABLE INITIALLY DEFERRED")
-        );
-
-        // 따옴표 식별자 안의 괄호·키워드는 옵션으로 보지 않는다
-        let opts =
-            parse_fk_options(r#"FOREIGN KEY (a) REFERENCES "we(ird ON DELETE x"(id) DEFERRABLE"#);
-        assert_eq!(opts.on_delete, "NO ACTION");
-        assert_eq!(opts.deferrable.as_deref(), Some("DEFERRABLE"));
-    }
-
-    // --- parse_pg_indexdef: 기존 동작(is_unique, columns) 회귀 방지 ---
 
     #[test]
     fn parse_indexdef_non_unique_basic() {

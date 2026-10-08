@@ -127,6 +127,10 @@ pub struct PgDdlConstraint {
     pub constraint_type: PgConstraintType,
     /// 로컬 컬럼 목록 (CHECK 제약 조건에서는 비어있을 수 있음)
     pub columns: Vec<String>,
+    /// `pg_get_constraintdef` 원문. 카탈로그에서 읽은 제약은 항상 `Some` 이고 DDL 은 이 원문을
+    /// 그대로 쓴다 — `NOT ENFORCED`·`WITHOUT OVERLAPS`·`PERIOD`·`MATCH`·`DEFERRABLE`·
+    /// `NULLS NOT DISTINCT`·`NOT VALID` 를 재구성 없이 보존. 직접 만든 값(`None`)은 다른 필드로 재구성한다.
+    pub definition: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
