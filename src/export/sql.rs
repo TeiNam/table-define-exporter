@@ -144,6 +144,64 @@ fn quote_table_name(db_type: DbType, table_name: &str) -> Result<String, AppErro
     }
 }
 
+/// 뷰를 서로의 참조 순서대로 정렬한다 (참조되는 뷰가 먼저, 나머지는 입력 순서 = 이름 순).
+///
+/// 정의 SQL 에 다른 뷰의 한정 이름이 나오면 의존으로 본다 — PostgreSQL 은 검색 경로를 비워
+/// 참조가 항상 `schema.view` 로, MySQL 의 SHOW CREATE VIEW 는 항상 `` `db`.`view` `` 로 나온다.
+/// 문자열 리터럴 속 이름 같은 오탐으로 순환이 생기면 남은 뷰는 입력 순서대로 둔다.
+fn order_views<'a>(schema: &str, views: Vec<&'a TableDef>, db_type: DbType) -> Vec<&'a TableDef> {
+    let deps: Vec<Vec<usize>> = views
+        .iter()
+        .map(|view| {
+            let ddl = view.ddl.as_deref().unwrap_or("");
+            views
+                .iter()
+                .enumerate()
+                .filter(|(_, other)| other.table_name != view.table_name)
+                .filter(|(_, other)| references_view(ddl, schema, &other.table_name, db_type))
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .collect();
+    let mut done = vec![false; views.len()];
+    let mut ordered = Vec::with_capacity(views.len());
+    while ordered.len() < views.len() {
+        let ready = (0..views.len()).find(|&i| !done[i] && deps[i].iter().all(|&d| done[d]));
+        // 순환(오탐)이면 남은 것 중 첫 번째를 그대로 낸다
+        let next = ready.unwrap_or_else(|| (0..views.len()).find(|&i| !done[i]).unwrap_or(0));
+        done[next] = true;
+        ordered.push(views[next]);
+    }
+    ordered
+}
+
+/// `ddl` 이 `schema.name` 뷰를 참조하는가 (DB 별 인용 형태, 앞뒤가 식별자 문자가 아닐 때만)
+fn references_view(ddl: &str, schema: &str, name: &str, db_type: DbType) -> bool {
+    let needles: Vec<String> = match db_type {
+        DbType::MySql => vec![format!(
+            "`{}`.`{}`",
+            schema.replace('`', "``"),
+            name.replace('`', "``")
+        )],
+        DbType::Postgres => {
+            let quoted = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+            [schema.to_string(), quoted(schema)]
+                .iter()
+                .flat_map(|s| [format!("{s}.{name}"), format!("{s}.{}", quoted(name))])
+                .collect()
+        }
+    };
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    needles.iter().any(|needle| {
+        ddl.match_indices(needle.as_str()).any(|(i, m)| {
+            let before = ddl[..i].chars().next_back();
+            let after = ddl[i + m.len()..].chars().next();
+            !before.is_some_and(|c| is_ident(c) || c == '"' || c == '.')
+                && !after.is_some_and(is_ident)
+        })
+    })
+}
+
 /// SQL 블록 주석 안에 넣을 이름. `/*`(PostgreSQL 은 주석 중첩)·`*/`·줄바꿈을 끊어
 /// 스키마/테이블 이름으로 주석을 닫고 문장을 끼워 넣지 못하게 한다.
 fn comment_text(name: &str) -> String {
@@ -200,12 +258,12 @@ fn write_sql(
 
     // 모든 테이블을 만든 뒤 실행할 문장 (PostgreSQL FK)
     let mut deferred: Vec<&str> = Vec::new();
-    // 뷰는 참조하는 테이블이 먼저 있어야 하므로 테이블을 모두 쓴 뒤에 쓴다 (각 그룹 안은 이름 순).
-    // ponytail: 뷰가 이름 순서상 뒤에 오는 다른 뷰를 참조하면 여전히 실패 — 필요하면 의존성 정렬.
+    // 뷰는 참조하는 테이블이 먼저 있어야 하므로 테이블을 모두 쓴 뒤에, 뷰끼리는 참조 순서대로 쓴다.
+    let views: Vec<&TableDef> = tables.iter().filter(|t| t.general.is_view()).collect();
     let ordered = tables
         .iter()
         .filter(|t| !t.general.is_view())
-        .chain(tables.iter().filter(|t| t.general.is_view()));
+        .chain(order_views(schema, views, db_type));
     for t in ordered {
         // Req 2.5, 14.3: 위험 식별자를 포함한 테이블은 출력에서 스킵한다 (DROP은 더 이상
         // 출력하지 않지만, 주석/DDL에 위험 식별자가 새는 것을 막기 위해 검증은 유지).
@@ -344,6 +402,55 @@ mod tests {
             out.find("CREATE TABLE t").unwrap() < out.find("CREATE VIEW a_view").unwrap(),
             "{out}"
         );
+    }
+
+    #[test]
+    fn views_are_ordered_by_dependency() {
+        let view = |name: &str, ddl: &str| {
+            let mut v = table(name, ddl, &[]);
+            v.general.table_type = "VIEW".to_string();
+            v
+        };
+        // a_view 가 z_view 를 참조 → 이름 순서와 반대로 z_view 가 먼저
+        let pg = render(
+            DbType::Postgres,
+            &[
+                view(
+                    "a_view",
+                    "CREATE VIEW \"s\".\"a_view\" AS\n SELECT id FROM s.z_view;",
+                ),
+                view(
+                    "z_view",
+                    "CREATE VIEW \"s\".\"z_view\" AS\n SELECT id FROM s.base;",
+                ),
+                table("base", "CREATE TABLE s.base (id int)", &[]),
+            ],
+        );
+        let pos = |needle: &str| pg.find(needle).unwrap();
+        assert!(pos("CREATE TABLE s.base") < pos("\"z_view\" AS"), "{pg}");
+        assert!(pos("\"z_view\" AS") < pos("\"a_view\" AS"), "{pg}");
+        // 이름 일부만 겹치는 경우(s.z_view2)는 의존이 아니다
+        assert!(!references_view(
+            "SELECT 1 FROM s.z_view2",
+            "s",
+            "z_view",
+            DbType::Postgres
+        ));
+        assert!(references_view(
+            "FROM `s`.`z_view` x",
+            "s",
+            "z_view",
+            DbType::MySql
+        ));
+        // 순환(오탐)이어도 모든 뷰를 한 번씩 낸다
+        let cyc = render(
+            DbType::Postgres,
+            &[
+                view("v1", "CREATE VIEW v1 AS SELECT 's.v2'"),
+                view("v2", "CREATE VIEW v2 AS SELECT 's.v1'"),
+            ],
+        );
+        assert_eq!(cyc.matches("CREATE VIEW").count(), 2, "{cyc}");
     }
 
     #[test]

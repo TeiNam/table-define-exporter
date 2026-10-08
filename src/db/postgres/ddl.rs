@@ -189,12 +189,15 @@ pub fn build_pg_materialized_view_ddl(
     schema: &str,
     view: &str,
     definition: &str,
+    reloptions: &[String],
 ) -> Result<String, AppError> {
     let quoted_schema = quote_pg_identifier(schema)?;
     let quoted_view = quote_pg_identifier(view)?;
     let body = definition.trim_end().trim_end_matches(';');
+    let options: Vec<&String> = reloptions.iter().collect();
     Ok(format!(
-        "CREATE MATERIALIZED VIEW {quoted_schema}.{quoted_view} AS\n{body}\nWITH NO DATA;\n"
+        "CREATE MATERIALIZED VIEW {quoted_schema}.{quoted_view}{} AS\n{body}\nWITH NO DATA;\n",
+        with_options(&options)
     ))
 }
 
@@ -275,13 +278,55 @@ pub fn build_pg_fk_ddl(
 }
 
 /// 뷰 정의(`pg_get_viewdef` 결과)로 `CREATE VIEW "schema"."view" AS ...;` 를 만든다.
-pub fn build_pg_view_ddl(schema: &str, view: &str, definition: &str) -> Result<String, AppError> {
+///
+/// `reloptions` 는 `pg_class.reloptions` (`security_barrier=true`, `check_option=cascaded` 등) —
+/// `pg_get_viewdef` 는 SELECT 만 돌려주므로 따로 붙여야 보안·갱신 제약이 유지된다.
+pub fn build_pg_view_ddl(
+    schema: &str,
+    view: &str,
+    definition: &str,
+    reloptions: &[String],
+) -> Result<String, AppError> {
     let quoted_schema = quote_pg_identifier(schema)?;
     let quoted_view = quote_pg_identifier(view)?;
     let body = definition.trim_end().trim_end_matches(';');
+    let (check_option, options): (Vec<&String>, Vec<&String>) = reloptions
+        .iter()
+        .partition(|o| o.starts_with("check_option="));
+    let check_option = match check_option
+        .first()
+        .map(|o| o.trim_start_matches("check_option="))
+    {
+        Some("local") => "\nWITH LOCAL CHECK OPTION",
+        Some(_) => "\nWITH CASCADED CHECK OPTION",
+        None => "",
+    };
     Ok(format!(
-        "CREATE VIEW {quoted_schema}.{quoted_view} AS\n{body};\n"
+        "CREATE VIEW {quoted_schema}.{quoted_view}{} AS\n{body}{check_option};\n",
+        with_options(&options)
     ))
+}
+
+/// `pg_class.reloptions` 의 `key=value` 목록 → ` WITH (key=value, ..)` (값은 필요하면 리터럴로)
+fn with_options(options: &[&String]) -> String {
+    if options.is_empty() {
+        return String::new();
+    }
+    let options: Vec<String> = options
+        .iter()
+        .map(|option| match option.split_once('=') {
+            Some((key, value))
+                if value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) =>
+            {
+                format!("{key}={value}")
+            }
+            Some((key, value)) => format!("{key}={}", super::schema_ddl::quote_literal(value)),
+            None => option.to_string(),
+        })
+        .collect();
+    format!(" WITH ({})", options.join(", "))
 }
 
 /// PostgreSQL `PgPool`을 통해 테이블 메타데이터를 조회하고 DDL을 재구성한다.
@@ -303,6 +348,7 @@ pub(super) async fn fetch_table_ddl(
         "SELECT c.relkind::text AS relkind, \
                 CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END AS view_def, \
                 pg_get_partkeydef(c.oid) AS partition_key, \
+                c.reloptions AS reloptions, \
                 fs.srvname::text AS foreign_server, \
                 ft.ftoptions AS foreign_options \
          FROM pg_catalog.pg_class c \
@@ -327,6 +373,10 @@ pub(super) async fn fetch_table_ddl(
     };
     let relkind = get_text("relkind").unwrap_or_default();
     let view_def = get_text("view_def");
+    let reloptions: Vec<String> = relation
+        .as_ref()
+        .and_then(|row| try_get_or_warn::<_, Option<Vec<String>>>(row, "reloptions", schema, table))
+        .unwrap_or_default();
     let partition_key = get_text("partition_key");
     let foreign = match get_text("foreign_server") {
         Some(server) => {
@@ -344,11 +394,11 @@ pub(super) async fn fetch_table_ddl(
     if let Some(definition) = view_def {
         let mut create = if relkind == "m" {
             let index_defs = fetch_index_defs(pool, schema, table).await?;
-            let mut ddl = build_pg_materialized_view_ddl(schema, table, &definition)?;
+            let mut ddl = build_pg_materialized_view_ddl(schema, table, &definition, &reloptions)?;
             append_statements(&mut ddl, &terminate(&index_defs));
             ddl
         } else {
-            build_pg_view_ddl(schema, table, &definition)?
+            build_pg_view_ddl(schema, table, &definition, &reloptions)?
         };
         append_statements(&mut create, &comments);
         return Ok(TableDdl {
