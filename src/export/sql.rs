@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
+use std::path::Path;
 
 use crate::{
     error::AppError,
@@ -98,15 +99,7 @@ impl Exporter for SqlExporter {
 
         // 스키마별 .sql 파일 생성 (기존 파일 덮어쓰기)
         let source = super::source_label(config);
-        for (schema, filename) in super::schema_filenames(catalog.keys(), &source, "sql") {
-            let file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&filename)
-                .map_err(|source| AppError::FileWrite { source })?;
-            self.files.insert(schema.clone(), file);
-        }
+        self.files = super::create_schema_files(Path::new(""), catalog.keys(), &source, "sql")?;
         Ok(())
     }
 
@@ -282,8 +275,14 @@ fn write_sql(
         // 테이블 주석
         writeln!(file, "/* Table : {} */", comment_text(&t.table_name))?;
         // CREATE DDL만 출력 — DROP 구문은 제외. 원본을 보존하되 Terminator로 정확히 하나의 `;` 종결
-        let ddl = t.ddl.as_deref().unwrap_or("");
-        writeln!(file, "{}\n\n", terminator.apply(ddl))?;
+        match t.ddl.as_deref() {
+            Some(ddl) => writeln!(file, "{}\n\n", terminator.apply(ddl))?,
+            // DDL 조회에 실패한 테이블 — 빈 `;` 대신 빠졌다는 표시를 남긴다 (원인은 실행 로그의 경고)
+            None => writeln!(
+                file,
+                "/* DDL 조회 실패 — 실행 로그의 경고를 확인하세요 */\n\n"
+            )?,
+        }
         deferred.extend(t.ddl_after.iter().map(String::as_str));
     }
 
@@ -390,6 +389,18 @@ mod tests {
         );
         let my = render(DbType::MySql, &[]);
         assert!(my.contains("SET NAMES utf8mb4;"), "{my}");
+    }
+
+    #[test]
+    fn failed_ddl_leaves_marker_instead_of_empty_statement() {
+        let mut failed = table("broken", "", &[]);
+        failed.ddl = None;
+        let out = render(DbType::Postgres, &[failed]);
+        assert!(
+            out.contains("/* Table : broken */\n/* DDL 조회 실패"),
+            "{out}"
+        );
+        assert!(!out.contains("\n;\n"), "{out}");
     }
 
     #[test]

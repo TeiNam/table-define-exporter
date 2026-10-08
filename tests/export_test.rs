@@ -149,11 +149,44 @@ fn source_label_distinguishes_port_and_database() {
     );
     assert_eq!(
         source_label(&config(DbType::Postgres, 5432, Some("app"))),
-        "db.local_app"
+        "db.local@app"
     );
     assert_eq!(
         source_label(&config(DbType::Postgres, 55432, Some("app"))),
-        "db.local_55432_app"
+        "db.local_55432@app"
+    );
+    // 숫자 이름의 database 와 포트가 같은 표기가 되지 않는다
+    assert_ne!(
+        source_label(&config(DbType::Postgres, 5432, Some("5433"))),
+        source_label(&config(DbType::Postgres, 5433, None))
+    );
+}
+
+/// Windows 장치 이름은 앞에 `_`, 255바이트를 넘는 이름은 잘라서 해시를 붙인다.
+#[test]
+fn filenames_avoid_device_names_and_length_limit() {
+    assert_eq!(workbook_filename("nul"), "_nul.xlsx");
+    assert_eq!(
+        workbook_filename("con.example.com"),
+        "_con.example.com.xlsx"
+    );
+    assert_eq!(workbook_filename("com1"), "_com1.xlsx");
+    assert_eq!(schema_filename("CON.x", "h", "md"), "_CON.x(h).md");
+    // 장치 이름이 일부일 뿐이면 그대로
+    assert_eq!(schema_filename("NUL", "h", "md"), "NUL(h).md");
+    assert_eq!(workbook_filename("console"), "console.xlsx");
+
+    let long_a = "가".repeat(100);
+    let long_b = format!("{}나", "가".repeat(99));
+    let a = schema_filename(&long_a, "h", "sql");
+    let b = schema_filename(&long_b, "h", "sql");
+    assert!(a.len() <= 255 && b.len() <= 255, "{} {}", a.len(), b.len());
+    assert!(a.ends_with(".sql") && a.starts_with("가가"), "{a}");
+    assert_ne!(a, b, "잘린 이름은 해시로 구분");
+    assert_eq!(
+        a,
+        schema_filename(&long_a, "h", "sql"),
+        "실행마다 같은 이름"
     );
 }
 
