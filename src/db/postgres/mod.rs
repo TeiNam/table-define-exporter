@@ -23,7 +23,8 @@ pub use ddl::{
 };
 pub use parse::{ParsedIndex, parse_pg_indexdef};
 pub use types::{
-    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, determine_pg_extra,
+    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, PgIdentitySequence,
+    determine_pg_extra,
 };
 
 /// PostgreSQL 시스템 스키마 목록 (정적 매칭 대상)

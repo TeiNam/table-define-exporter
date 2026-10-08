@@ -5,6 +5,8 @@
 //! 상위 `postgres` 모듈에서 `pub use`로 재노출되어
 //! `td_export::db::postgres::PgDdlColumn` 등의 기존 공개 경로를 유지한다.
 
+use crate::{error::AppError, identifier::quote_pg_identifier};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DDL 재구성용 메타데이터 구조체
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,45 +33,55 @@ pub struct PgDdlColumn {
 pub struct PgIdentity {
     /// `'a'` → `ALWAYS`, `'d'` → `BY DEFAULT`
     pub always: bool,
-    /// 시퀀스 `START WITH`
+    /// identity 시퀀스. 카탈로그에서 못 읽었으면 `None` → 옵션 없이 출력
+    pub sequence: Option<PgIdentitySequence>,
+}
+
+/// identity 가 쓰는 시퀀스의 이름과 옵션 (`pg_sequence`)
+#[derive(Debug, Clone, PartialEq)]
+pub struct PgIdentitySequence {
+    pub schema: String,
+    pub name: String,
     pub start: i64,
-    /// 시퀀스 `INCREMENT BY`
     pub increment: i64,
+    pub min: i64,
+    pub max: i64,
+    pub cache: i64,
+    pub cycle: bool,
 }
 
 impl PgIdentity {
-    /// `attidentity` 코드와 시퀀스 값으로 생성한다. identity 컬럼이 아니면 `None`.
-    pub fn from_catalog(
-        attidentity: &str,
-        start: Option<i64>,
-        increment: Option<i64>,
-    ) -> Option<Self> {
+    /// `attidentity` 코드와 시퀀스로 생성한다. identity 컬럼이 아니면 `None`.
+    pub fn from_catalog(attidentity: &str, sequence: Option<PgIdentitySequence>) -> Option<Self> {
         let always = match attidentity {
             "a" => true,
             "d" => false,
             _ => return None,
         };
-        Some(Self {
-            always,
-            start: start.unwrap_or(1),
-            increment: increment.unwrap_or(1),
-        })
+        Some(Self { always, sequence })
     }
 
-    /// 컬럼 정의 뒤에 붙는 ` GENERATED {ALWAYS|BY DEFAULT} AS IDENTITY [(START WITH n INCREMENT BY m)]`.
-    // ponytail: START WITH/INCREMENT BY 만 보존 — MINVALUE/MAXVALUE/CACHE/CYCLE 은 생략.
-    // 바꿔 쓰는 스키마가 생기면 pg_sequence 의 나머지 컬럼도 같은 방식으로 추가.
-    pub fn to_sql(&self) -> String {
+    /// 컬럼 정의 뒤에 붙는 ` GENERATED {ALWAYS|BY DEFAULT} AS IDENTITY (SEQUENCE NAME .. START WITH ..
+    /// INCREMENT BY .. MINVALUE .. MAXVALUE .. CACHE ..[ CYCLE])` — pg_dump 처럼 옵션을 모두 쓴다.
+    /// 일부만 쓰면 `MINVALUE 0 START WITH 0` 같은 정의가 기본 MINVALUE(1)와 충돌해 실행되지 않고,
+    /// 시퀀스 이름을 빼면 다른 객체가 참조하는 이름(`custom_seq`)이 사라진다.
+    pub fn to_sql(&self) -> Result<String, AppError> {
         let kind = if self.always { "ALWAYS" } else { "BY DEFAULT" };
-        let options = if (self.start, self.increment) == (1, 1) {
-            String::new()
-        } else {
-            format!(
-                " (START WITH {} INCREMENT BY {})",
-                self.start, self.increment
-            )
+        let options = match &self.sequence {
+            Some(seq) => format!(
+                " (SEQUENCE NAME {}.{} START WITH {} INCREMENT BY {} MINVALUE {} MAXVALUE {} CACHE {}{})",
+                quote_pg_identifier(&seq.schema)?,
+                quote_pg_identifier(&seq.name)?,
+                seq.start,
+                seq.increment,
+                seq.min,
+                seq.max,
+                seq.cache,
+                if seq.cycle { " CYCLE" } else { "" }
+            ),
+            None => String::new(),
         };
-        format!(" GENERATED {kind} AS IDENTITY{options}")
+        Ok(format!(" GENERATED {kind} AS IDENTITY{options}"))
     }
 }
 
