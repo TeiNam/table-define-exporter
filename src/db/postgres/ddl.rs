@@ -510,17 +510,16 @@ pub(super) async fn fetch_table_ddl(
         &index_defs,
         &options,
     )?;
+    let mut after = build_pg_fk_ddl(schema, table, &ddl_constraints)?;
     if partition_key.is_some() {
         let partitions = super::partition::fetch_partitions_ddl(pool, schema, table).await?;
-        append_statements(&mut create, &partitions);
+        append_statements(&mut create, &partitions.create);
+        after.extend(partitions.after);
     }
     let ownership = super::schema_ddl::fetch_sequence_ownership(pool, schema, table).await?;
     append_statements(&mut create, &ownership);
     append_statements(&mut create, &comments);
-    Ok(TableDdl {
-        create,
-        after: build_pg_fk_ddl(schema, table, &ddl_constraints)?,
-    })
+    Ok(TableDdl { create, after })
 }
 
 /// 테이블의 PK/UNIQUE/FK/CHECK 제약 조건을 `pg_constraint` 에서 조회한다 (정의 순서 보존).
