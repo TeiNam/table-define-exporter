@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "td-export"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "async-trait",
