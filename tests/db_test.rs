@@ -1099,6 +1099,44 @@ fn view_ddl_uses_create_view() {
 }
 
 #[test]
+fn ddl_with_exclude_constraint_and_not_null_named_check() {
+    let columns = vec![PgDdlColumn {
+        name: "during".to_string(),
+        data_type: "tstzrange".to_string(),
+        is_nullable: true,
+        default_value: None,
+        generated: None,
+        identity: None,
+    }];
+    let constraints = vec![
+        PgDdlConstraint {
+            name: "price_not_null".to_string(),
+            constraint_type: PgConstraintType::Check {
+                expression: "(id IS NOT NULL)".to_string(),
+            },
+            columns: vec![],
+        },
+        PgDdlConstraint {
+            name: "room_no_overlap".to_string(),
+            constraint_type: PgConstraintType::Exclude {
+                definition: "EXCLUDE USING gist (during WITH &&)".to_string(),
+            },
+            columns: vec![],
+        },
+    ];
+    let ddl = build_pg_ddl_from_metadata("a", "room", &columns, &constraints, &[]).unwrap();
+    // 이름이 *_not_null 이어도 사용자 CHECK 는 그대로 나온다
+    assert!(
+        ddl.contains("CONSTRAINT \"price_not_null\" CHECK ((id IS NOT NULL))"),
+        "{ddl}"
+    );
+    assert!(
+        ddl.contains("CONSTRAINT \"room_no_overlap\" EXCLUDE USING gist (during WITH &&)"),
+        "{ddl}"
+    );
+}
+
+#[test]
 fn ddl_with_identity_columns() {
     let col = |name: &str, identity: Option<PgIdentity>| PgDdlColumn {
         name: name.to_string(),

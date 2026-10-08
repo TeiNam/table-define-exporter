@@ -118,6 +118,14 @@ fn build_table_ddl(
         }
     }
 
+    // EXCLUDE 는 제약 자체를 출력한다 (제약이 만든 인덱스는 index_defs 에서 제외됨)
+    for c in constraints {
+        if let PgConstraintType::Exclude { ref definition } = c.constraint_type {
+            let quoted_name = quote_pg_identifier(&c.name)?;
+            entries.push(format!("    CONSTRAINT {quoted_name} {definition}"));
+        }
+    }
+
     // 엔트리들을 쉼표+개행으로 결합
     ddl.push_str(&entries.join(",\n"));
     match partition_key {
@@ -136,6 +144,14 @@ fn build_table_ddl(
     }
 
     Ok(ddl)
+}
+
+/// DDL 뒤에 문장들을 한 줄씩 붙인다.
+fn append_statements(ddl: &mut String, statements: &[String]) {
+    for statement in statements {
+        ddl.push_str(statement);
+        ddl.push('\n');
+    }
 }
 
 /// FK 제약 조건을 `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ...;` 문장으로 만든다.
@@ -235,9 +251,12 @@ pub(super) async fn fetch_table_ddl(
         ),
         None => (None, None),
     };
+    let comments = super::comment::fetch_comment_ddl(pool, schema, table).await?;
     if let Some(definition) = view_def {
+        let mut create = build_pg_view_ddl(schema, table, &definition)?;
+        append_statements(&mut create, &comments);
         return Ok(TableDdl {
-            create: build_pg_view_ddl(schema, table, &definition)?,
+            create,
             after: Vec::new(),
         });
     }
@@ -321,7 +340,7 @@ pub(super) async fn fetch_table_ddl(
            AND NOT EXISTS ( \
                SELECT 1 FROM pg_catalog.pg_constraint con \
                WHERE con.conindid = i.indexrelid \
-                 AND con.contype IN ('p', 'u') \
+                 AND con.contype IN ('p', 'u', 'x') \
            ) \
          ORDER BY i.indexrelid",
     )
@@ -351,15 +370,12 @@ pub(super) async fn fetch_table_ddl(
         partition_key.as_deref(),
     )?;
     if partition_key.is_some() {
-        for statement in super::partition::fetch_partitions_ddl(pool, schema, table).await? {
-            create.push_str(&statement);
-            create.push('\n');
-        }
+        let partitions = super::partition::fetch_partitions_ddl(pool, schema, table).await?;
+        append_statements(&mut create, &partitions);
     }
-    for statement in super::schema_ddl::fetch_sequence_ownership(pool, schema, table).await? {
-        create.push_str(&statement);
-        create.push('\n');
-    }
+    let ownership = super::schema_ddl::fetch_sequence_ownership(pool, schema, table).await?;
+    append_statements(&mut create, &ownership);
+    append_statements(&mut create, &comments);
     Ok(TableDdl {
         create,
         after: build_pg_fk_ddl(schema, table, &ddl_constraints)?,
@@ -419,13 +435,14 @@ pub(super) async fn fetch_constraints(
          LEFT JOIN pg_catalog.pg_namespace ref_ns \
            ON ref_ns.oid = ref_cl.relnamespace \
          WHERE ns.nspname = $1 AND cl.relname = $2 \
-           AND con.contype IN ('p', 'u', 'f', 'c') \
+           AND con.contype IN ('p', 'u', 'f', 'c', 'x') \
          ORDER BY \
            CASE con.contype \
              WHEN 'p' THEN 1 \
              WHEN 'u' THEN 2 \
              WHEN 'f' THEN 3 \
              WHEN 'c' THEN 4 \
+             WHEN 'x' THEN 5 \
            END, \
            con.conname",
     )
@@ -479,14 +496,12 @@ pub(super) async fn fetch_constraints(
                 }
             }
             "c" => {
-                // 시스템 생성 CHECK 제약 조건 제외 (NOT NULL 등)
-                if conname.ends_with("_not_null") {
-                    continue;
-                }
-                // pg_get_constraintdef에서 CHECK 표현식 추출
+                // NOT NULL 은 CHECK 가 아니라 contype 'n'(PG 18+)이거나 카탈로그에 없으므로
+                // 이름으로 걸러내지 않는다 (예전엔 이름이 *_not_null 인 사용자 CHECK 가 빠졌다)
                 let expression = extract_check_expression(&condef);
                 PgConstraintType::Check { expression }
             }
+            "x" => PgConstraintType::Exclude { definition: condef },
             _ => continue,
         };
 

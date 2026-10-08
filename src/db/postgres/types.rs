@@ -114,6 +114,8 @@ pub enum PgConstraintType {
     },
     /// CHECK 제약 조건
     Check { expression: String },
+    /// EXCLUDE 제약 조건 — `pg_get_constraintdef` 원문 (예: `EXCLUDE USING gist (during WITH &&)`)
+    Exclude { definition: String },
 }
 
 /// DDL 재구성용 제약 조건 메타데이터
