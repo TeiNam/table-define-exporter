@@ -38,6 +38,7 @@ fn example_parenthesized_predicate_on_unique_index() {
         is_unique,
         columns,
         predicate,
+        ..
     } = parsed;
     assert!(is_unique);
     assert_eq!(columns, "c");

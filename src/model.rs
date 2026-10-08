@@ -261,18 +261,27 @@ pub struct IndexInfo {
     pub index_columns: String, // 쉼표 구분 컬럼 목록 (DESC·prefix 길이·함수식 포함)
     /// 파셜 인덱스의 WHERE 절 predicate (없으면 None)
     pub predicate: Option<String>,
-    /// MySQL `INDEX_TYPE` (BTREE/HASH/FULLTEXT/SPATIAL). PostgreSQL 은 EXCLUDE 제약 인덱스만 `EXCLUDE`
+    /// 인덱스 방식. MySQL `INDEX_TYPE` (BTREE/HASH/FULLTEXT/SPATIAL),
+    /// PostgreSQL `USING` 방식 (BTREE/HASH/GIN/GIST/BRIN/SPGIST) 또는 EXCLUDE 제약이면 `EXCLUDE`
     pub index_type: Option<String>,
+    /// 커버링 인덱스의 INCLUDE 컬럼 (PostgreSQL, 없으면 None)
+    pub include_columns: Option<String>,
 }
 
 impl IndexInfo {
-    /// 정의서에 표시할 인덱스 종류: Fulltext / Spatial / Exclude / Unique / Normal
+    /// 정의서에 표시할 인덱스 종류: Fulltext / Spatial / Exclude / Unique /
+    /// (B-tree 가 아닌 방식) Hash / GIN / GiST / BRIN / SP-GiST / Normal
     pub fn kind_label(&self) -> &'static str {
         match self.index_type.as_deref() {
             Some("FULLTEXT") => "Fulltext",
             Some("SPATIAL") => "Spatial",
             Some("EXCLUDE") => "Exclude",
             _ if self.non_unique == 0 => "Unique",
+            Some("HASH") => "Hash",
+            Some("GIN") => "GIN",
+            Some("GIST") => "GiST",
+            Some("BRIN") => "BRIN",
+            Some("SPGIST") => "SP-GiST",
             _ => "Normal",
         }
     }

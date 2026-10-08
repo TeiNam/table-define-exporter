@@ -55,6 +55,7 @@ fn make_table_with_index_predicate(predicate: Option<String>) -> TableDef {
             index_columns: "id".to_string(),
             predicate,
             index_type: None,
+            include_columns: None,
         }],
         constraints: vec![],
         view: None,
@@ -221,6 +222,7 @@ fn markdown_shows_index_kind_and_column_modifiers() {
             index_columns: "body".to_string(),
             predicate: None,
             index_type: Some("FULLTEXT".to_string()),
+            include_columns: None,
         },
         IndexInfo {
             index_name: "idx_recent".to_string(),
@@ -228,6 +230,7 @@ fn markdown_shows_index_kind_and_column_modifiers() {
             index_columns: "user_id,created_at DESC".to_string(),
             predicate: None,
             index_type: Some("BTREE".to_string()),
+            include_columns: None,
         },
     ];
     let output = render_markdown_to_string("testschema", &[table]);

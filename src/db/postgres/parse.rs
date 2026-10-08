@@ -21,6 +21,10 @@ pub struct ParsedIndex {
     pub columns: String,
     /// 파셜 인덱스의 `WHERE ...` 절. 존재하지 않으면 `None`.
     pub predicate: Option<String>,
+    /// 커버링 인덱스의 `INCLUDE (...)` 컬럼 목록. 없으면 `None`.
+    pub include: Option<String>,
+    /// 인덱스 방식 (`USING btree` 의 btree, 대문자). 없으면 `None`.
+    pub method: Option<String>,
 }
 
 /// PostgreSQL indexdef 문자열을 파싱하여 [`ParsedIndex`]를 반환한다.
@@ -42,22 +46,67 @@ pub fn parse_pg_indexdef(indexdef: &str) -> ParsedIndex {
     // 컬럼 블록의 괄호 위치를 찾는다.
     // predicate는 컬럼 블록 닫는 괄호 이후에만 등장할 수 있으므로,
     // 먼저 컬럼 블록의 경계를 확정하여 predicate 내부 괄호와의 혼동을 차단한다.
-    let (columns, predicate) = match find_column_block(indexdef) {
+    let (columns, include, predicate) = match find_column_block(indexdef) {
         Some((open, close)) => {
             let inner = &indexdef[open + 1..close];
             let cols = extract_columns_from_block(inner);
-            let after_block = &indexdef[close + 1..];
-            let pred = extract_where_clause(after_block);
-            (cols, pred)
+            // pg_get_indexdef 순서: (cols) [INCLUDE (..)] [NULLS NOT DISTINCT] [WITH (..)]
+            // [TABLESPACE ..] [WHERE ..] — INCLUDE 뒤에 WHERE 가 와도 놓치지 않도록 따로 찾는다
+            let (include, rest) = split_include(&indexdef[close + 1..]);
+            (cols, include, extract_where_clause(rest))
         }
-        None => (String::new(), None),
+        None => (String::new(), None, None),
     };
+    let method = indexdef
+        .to_ascii_uppercase()
+        .split_once("USING ")
+        .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string));
 
     ParsedIndex {
         is_unique,
         columns,
         predicate,
+        include,
+        method,
     }
+}
+
+/// 컬럼 블록 뒤가 `INCLUDE (...)` 로 시작하면 그 목록과 나머지를 나눈다.
+fn split_include(after_block: &str) -> (Option<String>, &str) {
+    let trimmed = after_block.trim_start();
+    if !trimmed.to_ascii_uppercase().starts_with("INCLUDE (") {
+        return (None, after_block);
+    }
+    let open = "INCLUDE ".len();
+    match closing_paren(trimmed, open) {
+        Some(close) => (
+            Some(trimmed[open + 1..close].trim().to_string()),
+            &trimmed[close + 1..],
+        ),
+        None => (None, after_block),
+    }
+}
+
+/// `s[open]` 의 `(` 와 짝이 맞는 `)` 위치 (따옴표 식별자·문자열 안의 괄호는 무시).
+fn closing_paren(s: &str, open: usize) -> Option<usize> {
+    let mut depth = 0;
+    let mut quote: Option<char> = None;
+    for (i, c) in s[open..].char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// indexdef 문자열에서 컬럼 블록 `(...)`의 여는/닫는 괄호 바이트 인덱스를 반환한다.
@@ -105,18 +154,28 @@ fn extract_columns_from_block(inner: &str) -> String {
 /// 대소문자를 구분하지 않으며, `WHERE` 다음에 공백이 반드시 따라와야 한다.
 /// predicate 내부는 원문 그대로(공백만 trim) 유지한다.
 fn extract_where_clause(after_block: &str) -> Option<String> {
-    let trimmed = after_block.trim_start();
-    // "WHERE "는 6바이트 ASCII이므로 `get(..6)`로 UTF-8 경계 안전 검사.
-    let prefix = trimmed.get(..6)?;
-    if !prefix.eq_ignore_ascii_case("WHERE ") {
-        return None;
+    // WHERE 앞에 NULLS NOT DISTINCT / WITH (..) / TABLESPACE 가 올 수 있으므로
+    // 괄호 밖에서 공백 뒤에 오는 첫 `WHERE ` 를 찾는다 (WHERE 는 항상 마지막 절).
+    let mut depth = 0;
+    let mut prev_is_space = true;
+    for (i, c) in after_block.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ if depth == 0
+                && prev_is_space
+                && after_block
+                    .get(i..i + 6)
+                    .is_some_and(|w| w.eq_ignore_ascii_case("WHERE ")) =>
+            {
+                let pred = after_block[i + 6..].trim();
+                return (!pred.is_empty()).then(|| pred.to_string());
+            }
+            _ => {}
+        }
+        prev_is_space = c.is_whitespace();
     }
-    let pred = trimmed[6..].trim();
-    if pred.is_empty() {
-        None
-    } else {
-        Some(pred.to_string())
-    }
+    None
 }
 
 /// 최상위 레벨의 쉼표로만 분리한다 (괄호 내부의 쉼표는 무시).
@@ -270,6 +329,25 @@ pub(super) fn quote_column_list(columns: &[String]) -> Result<String, AppError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_indexdef_include_method_and_where_after_include() {
+        let parsed = parse_pg_indexdef(
+            "CREATE UNIQUE INDEX i ON a.t USING btree (id) INCLUDE (name, \"x)y\") \
+             NULLS NOT DISTINCT WITH (fillfactor='70') WHERE (id > 0)",
+        );
+        assert_eq!(parsed.columns, "id");
+        assert_eq!(parsed.include.as_deref(), Some("name, \"x)y\""));
+        assert_eq!(parsed.predicate.as_deref(), Some("(id > 0)"));
+        assert_eq!(parsed.method.as_deref(), Some("BTREE"));
+
+        let gin = parse_pg_indexdef(
+            "CREATE INDEX g ON a.t USING gin (to_tsvector('simple'::regconfig, name))",
+        );
+        assert_eq!(gin.method.as_deref(), Some("GIN"));
+        assert_eq!(gin.include, None);
+        assert_eq!(gin.predicate, None);
+    }
 
     #[test]
     fn parse_fk_options_reads_each_clause_up_to_next_keyword() {

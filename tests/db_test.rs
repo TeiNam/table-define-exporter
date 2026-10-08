@@ -891,6 +891,8 @@ fn parsed_index_struct_equality() {
         is_unique: false,
         columns: "c".to_string(),
         predicate: None,
+        include: None,
+        method: Some("BTREE".to_string()),
     };
     assert_eq!(a, b);
 }

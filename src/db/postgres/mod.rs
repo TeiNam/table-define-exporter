@@ -235,6 +235,7 @@ impl PgClient {
                  c.collation_name, \
                  a.attidentity::text AS attidentity, \
                  a.attgenerated::text AS attgenerated, \
+                 c.generation_expression, \
                  col_description(a.attrelid, a.attnum) AS column_comment \
              FROM information_schema.columns c \
              JOIN pg_catalog.pg_attribute a \
@@ -259,22 +260,26 @@ impl PgClient {
             source: e,
         })?;
 
-        // column_key 결정을 위한 인덱스 정보 조회
-        // pg_index + pg_attribute 조인으로 각 컬럼의 인덱스 참여 여부를 확인
+        // column_key 결정을 위한 인덱스 키 컬럼 조회 (INCLUDE 컬럼은 키가 아니므로 제외)
+        // MySQL COLUMN_KEY 와 같은 기준: PK 컬럼은 모두 PRI, 그 외 인덱스는 첫 키 컬럼만
+        // 단일 컬럼 유니크면 UNI, 나머지는 MUL (복합 유니크의 첫 컬럼도 MUL)
         let key_rows = sqlx::query(
             "SELECT \
-                 a.attname AS column_name, \
+                 a.attname::text AS column_name, \
                  i.indisprimary, \
-                 i.indisunique \
+                 i.indisunique, \
+                 i.indnkeyatts::int4 AS key_count, \
+                 k.ord::int4 AS position \
              FROM pg_catalog.pg_index i \
              JOIN pg_catalog.pg_class cl ON cl.oid = i.indrelid \
              JOIN pg_catalog.pg_namespace ns ON ns.oid = cl.relnamespace \
+             CROSS JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
              JOIN pg_catalog.pg_attribute a \
                ON a.attrelid = i.indrelid \
-               AND a.attnum = ANY(i.indkey) \
-               AND a.attnum > 0 \
+               AND a.attnum = k.attnum \
                AND NOT a.attisdropped \
-             WHERE ns.nspname = $1 AND cl.relname = $2",
+             WHERE ns.nspname = $1 AND cl.relname = $2 \
+               AND k.attnum > 0 AND k.ord <= i.indnkeyatts",
         )
         .bind(schema)
         .bind(table)
@@ -294,13 +299,15 @@ impl PgClient {
             let col_name: String = try_get_or_warn(row, "column_name", schema, table);
             let is_primary: bool = try_get_or_warn(row, "indisprimary", schema, table);
             let is_unique: bool = try_get_or_warn(row, "indisunique", schema, table);
+            let key_count: i32 = try_get_or_warn(row, "key_count", schema, table);
+            let position: i32 = try_get_or_warn(row, "position", schema, table);
 
-            let new_key = if is_primary {
-                "PRI"
-            } else if is_unique {
-                "UNI"
-            } else {
-                "MUL"
+            let new_key = match (is_primary, position) {
+                (true, _) => "PRI",
+                (false, 1) if is_unique && key_count == 1 => "UNI",
+                (false, 1) => "MUL",
+                // 첫 키 컬럼이 아니면 표시하지 않는다 (MySQL 과 동일)
+                _ => continue,
             };
 
             // 우선순위: PRI > UNI > MUL (기존 값보다 높은 우선순위만 덮어씀)
@@ -334,10 +341,17 @@ impl PgClient {
                 try_get_or_warn(row, "collation_name", schema, table);
             let attidentity: String = try_get_or_warn(row, "attidentity", schema, table);
             let attgenerated: String = try_get_or_warn(row, "attgenerated", schema, table);
+            let generation_expression: Option<String> =
+                try_get_or_warn(row, "generation_expression", schema, table);
             let comment: Option<String> = try_get_or_warn(row, "column_comment", schema, table);
 
             // extra 결정 (identity/serial/generated)
-            let extra = determine_pg_extra(&attidentity, &attgenerated, column_default.as_deref());
+            // generated 컬럼은 MySQL 처럼 식도 함께 표시 (예: STORED GENERATED (id * 2))
+            let extra = determine_pg_extra(&attidentity, &attgenerated, column_default.as_deref())
+                .map(|e| match &generation_expression {
+                    Some(expr) if e.ends_with("GENERATED") => format!("{e} {expr}"),
+                    _ => e,
+                });
 
             // column_key 결정
             let column_key = column_keys.get(&column_name).cloned();
@@ -404,6 +418,8 @@ impl PgClient {
                 is_unique,
                 columns,
                 predicate,
+                include,
+                method,
             } = parse_pg_indexdef(exclusion_def.as_deref().unwrap_or(&indexdef));
 
             indexes.push(IndexInfo {
@@ -411,7 +427,8 @@ impl PgClient {
                 non_unique: if is_unique { 0 } else { 1 },
                 index_columns: columns,
                 predicate,
-                index_type: exclusion_def.map(|_| "EXCLUDE".to_string()),
+                index_type: exclusion_def.map(|_| "EXCLUDE".to_string()).or(method),
+                include_columns: include,
             });
         }
         Ok(indexes)

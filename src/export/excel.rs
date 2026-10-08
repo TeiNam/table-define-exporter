@@ -222,12 +222,18 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
                     let idx_type = format!("{} Index", idx.kind_label());
                     ws.merge_range(row, 0, row, 1, &idx_type, &Format::new())?;
                     ws.merge_range(row, 2, row, 5, idx.index_name.as_str(), &Format::new())?;
-                    // 파셜 인덱스(partial index): predicate가 존재하면 컬럼 뒤에 " WHERE <predicate>" 추가
-                    let columns_cell = if let Some(pred) = &idx.predicate {
-                        format!("{} WHERE {}", idx.index_columns, pred)
-                    } else {
-                        idx.index_columns.clone()
-                    };
+                    // 커버링 인덱스 INCLUDE, 파셜 인덱스 WHERE 를 컬럼 뒤에 붙인다
+                    let include = idx
+                        .include_columns
+                        .as_deref()
+                        .map(|cols| format!(" INCLUDE ({cols})"))
+                        .unwrap_or_default();
+                    let predicate = idx
+                        .predicate
+                        .as_deref()
+                        .map(|pred| format!(" WHERE {pred}"))
+                        .unwrap_or_default();
+                    let columns_cell = format!("{}{include}{predicate}", idx.index_columns);
                     ws.merge_range(row, 6, row, 9, columns_cell.as_str(), &Format::new())?;
                     row += 1;
                 }
