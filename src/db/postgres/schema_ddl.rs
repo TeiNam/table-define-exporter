@@ -20,10 +20,13 @@ pub struct PgSequence {
     pub cycle: bool,
 }
 
-/// 스키마의 사용자 타입·시퀀스 생성문 (enum → 도메인 → 복합 타입 → 시퀀스, 각각 생성 순).
+/// 스키마의 사용자 타입·시퀀스 생성문. 시퀀스를 먼저(도메인 기본값이 `nextval` 을 쓸 수 있음),
+/// 그다음 enum / 도메인 / 복합 / range 타입을 종류와 무관하게 OID(생성) 순으로 낸다 — 타입은
+/// 의존하는 타입보다 늦게 만들어지므로 OID 순이 곧 의존 순서다 (예: 복합 타입 위의 도메인).
 ///
 /// identity 컬럼의 내부 시퀀스는 `GENERATED ... AS IDENTITY` 가 만들므로 제외한다.
-// ponytail: range/base(C) 타입, 타입 코멘트·권한은 생략 — 쓰는 스키마가 생기면 같은 방식으로 추가.
+// ponytail: base(C) 타입·range 의 subtype_opclass/canonical/subtype_diff·타입 코멘트·권한은 생략,
+// ALTER TYPE 으로 나중에 더 새 타입을 참조하게 된 경우의 순서도 OID 기준 — 필요해지면 의존성 정렬.
 pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<String>, AppError> {
     const LABEL: &str = "schema objects";
     let query_err = |e| AppError::MetadataQuery {
@@ -31,38 +34,46 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
         table: LABEL.to_string(),
         source: e,
     };
-    let mut statements = Vec::new();
     // 객체 하나(예: 이름에 위험 문자가 든 타입)가 실패해도 나머지 타입·시퀀스는 내보낸다.
-    // 예전엔 `?` 로 누적 결과 전체를 버려, 정상 enum 을 쓰는 테이블까지 실행할 수 없었다.
-    let mut push = |kind: &str, name: &str, result: Result<String, AppError>| match result {
-        Ok(statement) => statements.push(statement),
-        Err(e) => tracing::warn!("{schema}.{name} ({kind}) 생성문 생략: {e}"),
+    let skip = |kind: &str, name: &str, e: AppError| {
+        tracing::warn!("{schema}.{name} ({kind}) 생성문 생략: {e}");
     };
+    let mut types: Vec<(i64, String)> = Vec::new();
+    let mut add_type =
+        |oid: i64, kind: &str, name: &str, result: Result<String, AppError>| match result {
+            Ok(statement) => types.push((oid, statement)),
+            Err(e) => skip(kind, name, e),
+        };
 
+    // enum — 라벨이 없는 `ENUM ()` 도 포함
     let enums = sqlx::query(
-        "SELECT t.typname::text AS name, \
-                array_agg(e.enumlabel::text ORDER BY e.enumsortorder) AS labels \
+        "SELECT t.oid::int8 AS oid, t.typname::text AS name, \
+                COALESCE(array_agg(e.enumlabel::text ORDER BY e.enumsortorder) \
+                         FILTER (WHERE e.enumlabel IS NOT NULL), '{}') AS labels \
          FROM pg_catalog.pg_type t \
          JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
-         JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid \
+         LEFT JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid \
          WHERE n.nspname = $1 AND t.typtype = 'e' \
-         GROUP BY t.oid, t.typname \
-         ORDER BY t.oid",
+         GROUP BY t.oid, t.typname",
     )
     .bind(schema)
     .fetch_all(pool)
     .await
     .map_err(query_err)?;
     for row in &enums {
+        let oid: i64 = try_get_or_warn(row, "oid", schema, LABEL);
         let name: String = try_get_or_warn(row, "name", schema, LABEL);
         let labels: Vec<String> = try_get_or_warn(row, "labels", schema, LABEL);
-        push("enum", &name, build_enum_ddl(schema, &name, &labels));
+        add_type(oid, "enum", &name, build_enum_ddl(schema, &name, &labels));
     }
 
+    // 도메인 — 기본값은 typdefault(이름 변경 등이 반영되지 않는 텍스트) 대신 typdefaultbin 을 역변환
     let domains = sqlx::query(
-        "SELECT t.typname::text AS name, \
+        "SELECT t.oid::int8 AS oid, t.typname::text AS name, \
                 format_type(t.typbasetype, t.typtypmod) AS base_type, \
-                t.typdefault AS default_value, \
+                CASE WHEN t.typcollation <> 0 AND t.typcollation <> bt.typcollation \
+                     THEN format('%I.%I', cn.nspname, co.collname) END AS collation, \
+                pg_get_expr(t.typdefaultbin, 'pg_catalog.pg_type'::regclass) AS default_value, \
                 t.typnotnull AS not_null, \
                 (SELECT array_agg(c.conname::text ORDER BY c.conname) \
                    FROM pg_catalog.pg_constraint c \
@@ -72,16 +83,20 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
                   WHERE c.contypid = t.oid AND c.contype = 'c') AS check_defs \
          FROM pg_catalog.pg_type t \
          JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
-         WHERE n.nspname = $1 AND t.typtype = 'd' \
-         ORDER BY t.oid",
+         JOIN pg_catalog.pg_type bt ON bt.oid = t.typbasetype \
+         LEFT JOIN pg_catalog.pg_collation co ON co.oid = t.typcollation \
+         LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = co.collnamespace \
+         WHERE n.nspname = $1 AND t.typtype = 'd'",
     )
     .bind(schema)
     .fetch_all(pool)
     .await
     .map_err(query_err)?;
     for row in &domains {
+        let oid: i64 = try_get_or_warn(row, "oid", schema, LABEL);
         let name: String = try_get_or_warn(row, "name", schema, LABEL);
         let base_type: String = try_get_or_warn(row, "base_type", schema, LABEL);
+        let collation: Option<String> = try_get_or_warn(row, "collation", schema, LABEL);
         let default_value: Option<String> = try_get_or_warn(row, "default_value", schema, LABEL);
         let not_null: bool = try_get_or_warn(row, "not_null", schema, LABEL);
         let check_names: Option<Vec<String>> = try_get_or_warn(row, "check_names", schema, LABEL);
@@ -91,51 +106,91 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
             .into_iter()
             .zip(check_defs.unwrap_or_default())
             .collect();
-        let ddl = build_domain_ddl(
-            schema,
-            &name,
-            &base_type,
-            default_value.as_deref(),
+        let domain = DomainDef {
+            base_type: &base_type,
+            collation: collation.as_deref(),
+            default_value: default_value.as_deref(),
             not_null,
-            &checks,
+            checks: &checks,
+        };
+        add_type(
+            oid,
+            "domain",
+            &name,
+            build_domain_ddl(schema, &name, &domain),
         );
-        push("domain", &name, ddl);
     }
 
+    // 복합 타입 — 속성 타입에 기본값과 다른 COLLATE 를 붙인다
     let composites = sqlx::query(
-        "SELECT t.typname::text AS name, \
+        "SELECT t.oid::int8 AS oid, t.typname::text AS name, \
                 (SELECT array_agg(a.attname::text ORDER BY a.attnum) \
                    FROM pg_catalog.pg_attribute a \
                   WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) \
                   AS attr_names, \
-                (SELECT array_agg(format_type(a.atttypid, a.atttypmod) ORDER BY a.attnum) \
+                (SELECT array_agg(format_type(a.atttypid, a.atttypmod) || \
+                          CASE WHEN a.attcollation <> 0 AND a.attcollation <> at.typcollation \
+                               THEN ' COLLATE ' || format('%I.%I', cn.nspname, co.collname) \
+                               ELSE '' END \
+                          ORDER BY a.attnum) \
                    FROM pg_catalog.pg_attribute a \
+                   JOIN pg_catalog.pg_type at ON at.oid = a.atttypid \
+                   LEFT JOIN pg_catalog.pg_collation co ON co.oid = a.attcollation \
+                   LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = co.collnamespace \
                   WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) \
                   AS attr_types \
          FROM pg_catalog.pg_type t \
          JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
          JOIN pg_catalog.pg_class cl ON cl.oid = t.typrelid \
-         WHERE n.nspname = $1 AND t.typtype = 'c' AND cl.relkind = 'c' \
-         ORDER BY t.oid",
+         WHERE n.nspname = $1 AND t.typtype = 'c' AND cl.relkind = 'c'",
     )
     .bind(schema)
     .fetch_all(pool)
     .await
     .map_err(query_err)?;
     for row in &composites {
+        let oid: i64 = try_get_or_warn(row, "oid", schema, LABEL);
         let name: String = try_get_or_warn(row, "name", schema, LABEL);
         let names: Option<Vec<String>> = try_get_or_warn(row, "attr_names", schema, LABEL);
-        let types: Option<Vec<String>> = try_get_or_warn(row, "attr_types", schema, LABEL);
+        let types_: Option<Vec<String>> = try_get_or_warn(row, "attr_types", schema, LABEL);
         let attrs: Vec<(String, String)> = names
             .unwrap_or_default()
             .into_iter()
-            .zip(types.unwrap_or_default())
+            .zip(types_.unwrap_or_default())
             .collect();
-        push(
+        add_type(
+            oid,
             "composite type",
             &name,
             build_composite_ddl(schema, &name, &attrs),
         );
+    }
+
+    // range 타입 — multirange 이름(PG 14+)은 컬럼이 없는 PG 13 에서도 쿼리가 깨지지 않게 jsonb 로 읽는다
+    let ranges = sqlx::query(
+        "SELECT t.oid::int8 AS oid, t.typname::text AS name, \
+                format_type(r.rngsubtype, NULL) AS subtype, \
+                mn.nspname::text AS multirange_schema, mt.typname::text AS multirange_name \
+         FROM pg_catalog.pg_type t \
+         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
+         JOIN pg_catalog.pg_range r ON r.rngtypid = t.oid \
+         LEFT JOIN pg_catalog.pg_type mt ON mt.oid = (to_jsonb(r) ->> 'rngmultitypid')::oid \
+         LEFT JOIN pg_catalog.pg_namespace mn ON mn.oid = mt.typnamespace \
+         WHERE n.nspname = $1 AND t.typtype = 'r'",
+    )
+    .bind(schema)
+    .fetch_all(pool)
+    .await
+    .map_err(query_err)?;
+    for row in &ranges {
+        let oid: i64 = try_get_or_warn(row, "oid", schema, LABEL);
+        let name: String = try_get_or_warn(row, "name", schema, LABEL);
+        let subtype: String = try_get_or_warn(row, "subtype", schema, LABEL);
+        let mr_schema: Option<String> = try_get_or_warn(row, "multirange_schema", schema, LABEL);
+        let mr_name: Option<String> = try_get_or_warn(row, "multirange_name", schema, LABEL);
+        let multirange = mr_schema.zip(mr_name);
+        let ddl = build_range_ddl(schema, &name, &subtype, multirange.as_ref());
+        add_type(oid, "range type", &name, ddl);
     }
 
     let sequences = sqlx::query(
@@ -157,6 +212,7 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
     .fetch_all(pool)
     .await
     .map_err(query_err)?;
+    let mut statements = Vec::new();
     for row in &sequences {
         let name: String = try_get_or_warn(row, "name", schema, LABEL);
         let sequence = PgSequence {
@@ -168,13 +224,14 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
             cache: try_get_or_warn(row, "seqcache", schema, LABEL),
             cycle: try_get_or_warn(row, "seqcycle", schema, LABEL),
         };
-        push(
-            "sequence",
-            &name,
-            build_sequence_ddl(schema, &name, &sequence),
-        );
+        match build_sequence_ddl(schema, &name, &sequence) {
+            Ok(statement) => statements.push(statement),
+            Err(e) => skip("sequence", &name, e),
+        }
     }
 
+    types.sort_by_key(|(oid, _)| *oid);
+    statements.extend(types.into_iter().map(|(_, statement)| statement));
     Ok(statements)
 }
 
@@ -254,22 +311,31 @@ fn build_enum_ddl(schema: &str, name: &str, labels: &[String]) -> Result<String,
     ))
 }
 
-fn build_domain_ddl(
-    schema: &str,
-    name: &str,
-    base_type: &str,
-    default_value: Option<&str>,
+/// 도메인 정의 (`CREATE DOMAIN` 의 구성 요소)
+struct DomainDef<'a> {
+    base_type: &'a str,
+    collation: Option<&'a str>,
+    default_value: Option<&'a str>,
     not_null: bool,
-    checks: &[(String, String)],
-) -> Result<String, AppError> {
-    let mut ddl = format!("CREATE DOMAIN {} AS {base_type}", qualified(schema, name)?);
-    if let Some(default) = default_value {
+    checks: &'a [(String, String)],
+}
+
+fn build_domain_ddl(schema: &str, name: &str, domain: &DomainDef) -> Result<String, AppError> {
+    let mut ddl = format!(
+        "CREATE DOMAIN {} AS {}",
+        qualified(schema, name)?,
+        domain.base_type
+    );
+    if let Some(collation) = domain.collation {
+        ddl.push_str(&format!(" COLLATE {collation}"));
+    }
+    if let Some(default) = domain.default_value {
         ddl.push_str(&format!(" DEFAULT {default}"));
     }
-    if not_null {
+    if domain.not_null {
         ddl.push_str(" NOT NULL");
     }
-    for (check_name, definition) in checks {
+    for (check_name, definition) in domain.checks {
         ddl.push_str(&format!(
             " CONSTRAINT {} {definition}",
             quote_pg_identifier(check_name)?
@@ -277,6 +343,28 @@ fn build_domain_ddl(
     }
     ddl.push(';');
     Ok(ddl)
+}
+
+/// `CREATE TYPE "s"."r" AS RANGE (SUBTYPE = .. [, MULTIRANGE_TYPE_NAME = "s"."rm"]);`
+fn build_range_ddl(
+    schema: &str,
+    name: &str,
+    subtype: &str,
+    multirange: Option<&(String, String)>,
+) -> Result<String, AppError> {
+    let multirange = match multirange {
+        Some((mr_schema, mr_name)) => {
+            format!(
+                ", MULTIRANGE_TYPE_NAME = {}",
+                qualified(mr_schema, mr_name)?
+            )
+        }
+        None => String::new(),
+    };
+    Ok(format!(
+        "CREATE TYPE {} AS RANGE (SUBTYPE = {subtype}{multirange});",
+        qualified(schema, name)?
+    ))
 }
 
 fn build_composite_ddl(
@@ -319,16 +407,19 @@ mod tests {
             build_enum_ddl("a", "mood", &["ok".into(), "it's".into()]).unwrap(),
             r#"CREATE TYPE "a"."mood" AS ENUM ('ok', 'it''s');"#
         );
+        let checks = [(
+            "pos_int_check".to_string(),
+            "CHECK ((VALUE > 0))".to_string(),
+        )];
+        let domain = DomainDef {
+            base_type: "integer",
+            collation: None,
+            default_value: Some("1"),
+            not_null: true,
+            checks: &checks,
+        };
         assert_eq!(
-            build_domain_ddl(
-                "a",
-                "pos_int",
-                "integer",
-                Some("1"),
-                true,
-                &[("pos_int_check".into(), "CHECK ((VALUE > 0))".into())]
-            )
-            .unwrap(),
+            build_domain_ddl("a", "pos_int", &domain).unwrap(),
             r#"CREATE DOMAIN "a"."pos_int" AS integer DEFAULT 1 NOT NULL CONSTRAINT "pos_int_check" CHECK ((VALUE > 0));"#
         );
         assert_eq!(
@@ -355,6 +446,31 @@ mod tests {
         assert_eq!(
             build_sequence_ddl("a", "s", &seq).unwrap(),
             r#"CREATE SEQUENCE "a"."s" AS integer START WITH 1000 INCREMENT BY 10 MINVALUE 1 MAXVALUE 2147483647 CACHE 1 CYCLE;"#
+        );
+        let collated = DomainDef {
+            base_type: "text",
+            collation: Some("pg_catalog.\"C\""),
+            default_value: None,
+            not_null: false,
+            checks: &[],
+        };
+        assert_eq!(
+            build_domain_ddl("a", "code", &collated).unwrap(),
+            r#"CREATE DOMAIN "a"."code" AS text COLLATE pg_catalog."C";"#
+        );
+        assert_eq!(
+            build_enum_ddl("a", "empty", &[]).unwrap(),
+            r#"CREATE TYPE "a"."empty" AS ENUM ();"#
+        );
+        assert_eq!(
+            build_range_ddl(
+                "a",
+                "price_range",
+                "numeric",
+                Some(&("a".into(), "price_multirange".into()))
+            )
+            .unwrap(),
+            r#"CREATE TYPE "a"."price_range" AS RANGE (SUBTYPE = numeric, MULTIRANGE_TYPE_NAME = "a"."price_multirange");"#
         );
         // 위험 식별자는 거부
         assert!(build_enum_ddl("a;b", "mood", &[]).is_err());
