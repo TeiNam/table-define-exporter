@@ -312,15 +312,15 @@ pub(super) async fn fetch_table_ddl(
         .filter(|s| !s.is_empty())
         .collect();
 
-    // 4. DDL 재구성
+    // 4. DDL 재구성 — serial 시퀀스(스키마 파일 앞에서 생성)의 소유 관계는 테이블 직후에 복원
+    let mut create =
+        build_pg_ddl_from_metadata(schema, table, &ddl_columns, &ddl_constraints, &index_defs)?;
+    for statement in super::schema_ddl::fetch_sequence_ownership(pool, schema, table).await? {
+        create.push_str(&statement);
+        create.push('\n');
+    }
     Ok(TableDdl {
-        create: build_pg_ddl_from_metadata(
-            schema,
-            table,
-            &ddl_columns,
-            &ddl_constraints,
-            &index_defs,
-        )?,
+        create,
         after: build_pg_fk_ddl(schema, table, &ddl_constraints)?,
     })
 }
