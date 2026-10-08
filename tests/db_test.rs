@@ -1,8 +1,8 @@
 use proptest::prelude::*;
 use td_export::db::postgres::{
     ParsedIndex, PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity,
-    build_pg_column_type, build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_view_ddl,
-    determine_pg_extra, filter_pg_schemas, is_pg_system_schema, parse_pg_indexdef,
+    build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_view_ddl, determine_pg_extra,
+    filter_pg_schemas, is_pg_system_schema, parse_pg_indexdef,
 };
 use td_export::model::{ColumnInfo, GeneralInfo, TableDef, ViewInfo};
 
@@ -497,55 +497,6 @@ proptest! {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 단위 테스트: build_pg_column_type
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn build_pg_column_type_varchar_with_length() {
-    assert_eq!(
-        build_pg_column_type("varchar", Some(255), None, None),
-        "varchar(255)"
-    );
-}
-
-#[test]
-fn build_pg_column_type_bpchar_displayed_as_char() {
-    assert_eq!(
-        build_pg_column_type("bpchar", Some(10), None, None),
-        "char(10)"
-    );
-}
-
-#[test]
-fn build_pg_column_type_numeric_with_precision_scale() {
-    assert_eq!(
-        build_pg_column_type("numeric", None, Some(10), Some(2)),
-        "numeric(10,2)"
-    );
-}
-
-#[test]
-fn build_pg_column_type_plain_types() {
-    assert_eq!(build_pg_column_type("int4", None, None, None), "int4");
-    assert_eq!(build_pg_column_type("text", None, None, None), "text");
-    assert_eq!(build_pg_column_type("bool", None, None, None), "bool");
-    assert_eq!(
-        build_pg_column_type("timestamptz", None, None, None),
-        "timestamptz"
-    );
-}
-
-#[test]
-fn build_pg_column_type_array_type() {
-    assert_eq!(build_pg_column_type("_int4", None, None, None), "int4[]");
-    assert_eq!(build_pg_column_type("_text", None, None, None), "text[]");
-    assert_eq!(
-        build_pg_column_type("_varchar", None, None, None),
-        "varchar[]"
-    );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // 단위 테스트: determine_pg_extra
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -635,113 +586,6 @@ fn determine_pg_extra_serial_takes_priority_over_generated() {
         determine_pg_extra("", "s", Some("nextval('seq'::regclass)")),
         Some("auto_increment".to_string())
     );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Property 22 PBT 테스트: PG 컬럼 타입 포맷 정확성
-// **Validates: Requirements 6.2**
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// PG udt_name을 생성하는 전략 (배열 타입 제외)
-fn pg_udt_name_non_array_strategy() -> impl Strategy<Value = String> {
-    prop_oneof![
-        Just("int4".to_string()),
-        Just("int8".to_string()),
-        Just("text".to_string()),
-        Just("bool".to_string()),
-        Just("varchar".to_string()),
-        Just("bpchar".to_string()),
-        Just("numeric".to_string()),
-        Just("timestamptz".to_string()),
-        Just("uuid".to_string()),
-        Just("jsonb".to_string()),
-        Just("float8".to_string()),
-    ]
-}
-
-/// PG 배열 udt_name을 생성하는 전략
-fn pg_array_udt_name_strategy() -> impl Strategy<Value = String> {
-    prop_oneof![
-        Just("_int4".to_string()),
-        Just("_int8".to_string()),
-        Just("_text".to_string()),
-        Just("_bool".to_string()),
-        Just("_varchar".to_string()),
-        Just("_numeric".to_string()),
-        Just("_uuid".to_string()),
-    ]
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(100))]
-
-    /// Property 22-a: char_max_length가 Some이면 결과에 `({length})`가 포함된다.
-    /// **Validates: Requirements 6.2**
-    #[test]
-    fn prop22_char_max_length_format(
-        udt_name in pg_udt_name_non_array_strategy(),
-        length in 1i32..=10000i32,
-    ) {
-        let result = build_pg_column_type(&udt_name, Some(length), None, None);
-        prop_assert!(
-            result.contains(&format!("({})", length)),
-            "char_max_length={}인데 결과 '{}'에 '({})'가 없음",
-            length, result, length
-        );
-    }
-
-    /// Property 22-b: numeric + precision/scale이면 `numeric({p},{s})` 형식이다.
-    /// **Validates: Requirements 6.2**
-    #[test]
-    fn prop22_numeric_precision_scale_format(
-        precision in 1i32..=38i32,
-        scale in 0i32..=20i32,
-    ) {
-        let result = build_pg_column_type("numeric", None, Some(precision), Some(scale));
-        let expected = format!("numeric({precision},{scale})");
-        prop_assert_eq!(
-            &result, &expected,
-            "numeric({},{}) 기대했으나 '{}' 반환",
-            precision, scale, result
-        );
-    }
-
-    /// Property 22-c: 배열 타입(`_` 접두어)이면 결과가 `[]`로 끝난다.
-    /// **Validates: Requirements 6.2**
-    #[test]
-    fn prop22_array_type_ends_with_brackets(
-        udt_name in pg_array_udt_name_strategy(),
-    ) {
-        let result = build_pg_column_type(&udt_name, None, None, None);
-        prop_assert!(
-            result.ends_with("[]"),
-            "배열 타입 '{}'인데 결과 '{}'가 '[]'로 끝나지 않음",
-            udt_name, result
-        );
-        // `_` 접두어가 제거되었는지 확인
-        prop_assert!(
-            !result.starts_with('_'),
-            "배열 타입 결과 '{}'에 '_' 접두어가 남아있음",
-            result
-        );
-    }
-
-    /// Property 22-d: 길이/정밀도 없으면 udt_name 그대로 반환한다.
-    /// **Validates: Requirements 6.2**
-    #[test]
-    fn prop22_no_length_returns_udt_name(
-        udt_name in pg_udt_name_non_array_strategy().prop_filter(
-            "numeric 제외 (precision/scale 없이도 그대로 반환되지만 별도 테스트)",
-            |n| n != "numeric"
-        ),
-    ) {
-        let result = build_pg_column_type(&udt_name, None, None, None);
-        prop_assert_eq!(
-            &result, &udt_name,
-            "길이 없는 '{}'인데 '{}' 반환",
-            udt_name, result
-        );
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

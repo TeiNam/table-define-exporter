@@ -7,9 +7,7 @@
 use crate::{error::AppError, identifier::quote_pg_identifier, model::TableDdl};
 
 use super::parse::{extract_check_expression, parse_fk_options, quote_column_list};
-use super::types::{
-    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, build_pg_column_type,
-};
+use super::types::{PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity};
 use crate::db::try_get_or_warn;
 
 /// 테이블 메타데이터로부터 PostgreSQL DDL 문자열을 재구성한다.
@@ -219,10 +217,7 @@ pub(super) async fn fetch_table_ddl(
     let col_rows = sqlx::query(
         "SELECT \
              c.column_name, \
-             c.udt_name, \
-             c.character_maximum_length::int4 AS char_max_length, \
-             c.numeric_precision::int4 AS numeric_precision, \
-             c.numeric_scale::int4 AS numeric_scale, \
+             format_type(a.atttypid, a.atttypmod) AS data_type, \
              c.is_nullable, \
              c.column_default, \
              a.attgenerated::text AS attgenerated, \
@@ -261,11 +256,8 @@ pub(super) async fn fetch_table_ddl(
     for row in &col_rows {
         // try_get 실패 시 경고 로그 + 기본값 반환 (Requirements 5.2)
         let column_name: String = try_get_or_warn(row, "column_name", schema, table);
-        let udt_name: String = try_get_or_warn(row, "udt_name", schema, table);
-        let char_max_length: Option<i32> = try_get_or_warn(row, "char_max_length", schema, table);
-        let numeric_precision: Option<i32> =
-            try_get_or_warn(row, "numeric_precision", schema, table);
-        let numeric_scale: Option<i32> = try_get_or_warn(row, "numeric_scale", schema, table);
+        // format_type: 정밀도(timestamp(3))·도메인·사용자 타입(스키마 한정)까지 pg_dump 와 같은 표기
+        let data_type: String = try_get_or_warn(row, "data_type", schema, table);
         let is_nullable: String = try_get_or_warn(row, "is_nullable", schema, table);
         let column_default: Option<String> = try_get_or_warn(row, "column_default", schema, table);
         let attgenerated: String = try_get_or_warn(row, "attgenerated", schema, table);
@@ -275,10 +267,6 @@ pub(super) async fn fetch_table_ddl(
         let identity_start: Option<i64> = try_get_or_warn(row, "identity_start", schema, table);
         let identity_increment: Option<i64> =
             try_get_or_warn(row, "identity_increment", schema, table);
-
-        // 컬럼 타입 구성
-        let data_type =
-            build_pg_column_type(&udt_name, char_max_length, numeric_precision, numeric_scale);
 
         ddl_columns.push(PgDdlColumn {
             name: column_name,

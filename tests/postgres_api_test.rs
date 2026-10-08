@@ -6,14 +6,14 @@
 //! 빌드 단계에서 곧바로 감지된다.
 //!
 //! 검증 대상 경로(총 11종):
-//! - 함수: `build_pg_column_type`, `build_pg_ddl_from_metadata`,
+//! - 함수: `build_pg_ddl_from_metadata`,
 //!   `determine_pg_extra`, `filter_pg_schemas`, `is_pg_system_schema`,
 //!   `parse_pg_indexdef`
 //! - 타입: `ParsedIndex`, `PgClient`, `PgConstraintType`, `PgDdlColumn`,
 //!   `PgDdlConstraint`
 
 use td_export::db::postgres::{
-    ParsedIndex, PgClient, PgConstraintType, PgDdlColumn, PgDdlConstraint, build_pg_column_type,
+    ParsedIndex, PgClient, PgConstraintType, PgDdlColumn, PgDdlConstraint,
     build_pg_ddl_from_metadata, determine_pg_extra, filter_pg_schemas, is_pg_system_schema,
     parse_pg_indexdef,
 };
@@ -21,7 +21,6 @@ use td_export::db::postgres::{
 #[test]
 fn postgres_public_api_paths_compile() {
     // 함수 경로: 실제 호출로 시그니처까지 고정한다.
-    let _ = build_pg_column_type("int4", None, None, None);
     let _ = determine_pg_extra("", "", None);
     // parse_pg_indexdef는 Task 10.2에서 `ParsedIndex` 반환 타입으로 변경됨.
     let _: ParsedIndex = parse_pg_indexdef("CREATE INDEX i ON t USING btree (c)");

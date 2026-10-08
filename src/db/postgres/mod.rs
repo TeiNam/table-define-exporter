@@ -17,8 +17,7 @@ mod types;
 pub use ddl::{build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_view_ddl};
 pub use parse::{ParsedIndex, parse_pg_indexdef};
 pub use types::{
-    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, build_pg_column_type,
-    determine_pg_extra,
+    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, determine_pg_extra,
 };
 
 /// PostgreSQL 시스템 스키마 목록 (정적 매칭 대상)
@@ -210,7 +209,7 @@ impl PgClient {
     ///
     /// `information_schema.columns`와 `pg_catalog.pg_attribute`를 조인하여
     /// 컬럼 메타데이터를 수집한다. `ordinal_position` 순으로 정렬한다.
-    /// - column_type: `build_pg_column_type`으로 구성
+    /// - column_type: `format_type(atttypid, atttypmod)` — 정밀도·도메인·사용자 타입까지 원문 그대로
     /// - column_key: `pg_index` + `pg_attribute`로 PRI/UNI/MUL 결정
     /// - extra: `determine_pg_extra`로 identity/serial/generated 감지
     /// - charset: PostgreSQL에서는 항상 None
@@ -227,10 +226,7 @@ impl PgClient {
                  c.column_name, \
                  c.column_default, \
                  c.is_nullable, \
-                 c.udt_name, \
-                 c.character_maximum_length::int4 AS char_max_length, \
-                 c.numeric_precision::int4 AS numeric_precision, \
-                 c.numeric_scale::int4 AS numeric_scale, \
+                 format_type(a.atttypid, a.atttypmod) AS data_type, \
                  c.collation_name, \
                  a.attidentity::text AS attidentity, \
                  a.attgenerated::text AS attgenerated, \
@@ -328,21 +324,12 @@ impl PgClient {
             let column_default: Option<String> =
                 try_get_or_warn(row, "column_default", schema, table);
             let is_nullable: String = try_get_or_warn(row, "is_nullable", schema, table);
-            let udt_name: String = try_get_or_warn(row, "udt_name", schema, table);
-            let char_max_length: Option<i32> =
-                try_get_or_warn(row, "char_max_length", schema, table);
-            let numeric_precision: Option<i32> =
-                try_get_or_warn(row, "numeric_precision", schema, table);
-            let numeric_scale: Option<i32> = try_get_or_warn(row, "numeric_scale", schema, table);
+            let column_type: String = try_get_or_warn(row, "data_type", schema, table);
             let collation_name: Option<String> =
                 try_get_or_warn(row, "collation_name", schema, table);
             let attidentity: String = try_get_or_warn(row, "attidentity", schema, table);
             let attgenerated: String = try_get_or_warn(row, "attgenerated", schema, table);
             let comment: Option<String> = try_get_or_warn(row, "column_comment", schema, table);
-
-            // 컬럼 타입 구성
-            let column_type =
-                build_pg_column_type(&udt_name, char_max_length, numeric_precision, numeric_scale);
 
             // extra 결정 (identity/serial/generated)
             let extra = determine_pg_extra(&attidentity, &attgenerated, column_default.as_deref());
