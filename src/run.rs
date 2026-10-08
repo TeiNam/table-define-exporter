@@ -268,7 +268,12 @@ pub async fn run() -> Result<()> {
     // 파일 저장/닫기
     exporter.finish().context("Exporter finish 실패")?;
 
-    tracing::info!("Export Complete.");
+    match crate::WARNINGS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => tracing::info!("Export Complete."),
+        n => tracing::warn!(
+            "Export Complete — 경고 {n}건: 일부 객체가 빠졌을 수 있으니 위 경고를 확인하세요."
+        ),
+    }
     Ok(())
 }
 

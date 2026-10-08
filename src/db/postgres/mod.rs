@@ -77,6 +77,17 @@ impl PgClient {
         // 커넥션 풀 생성 (최대 4개 연결)
         let pool = PgPoolOptions::new()
             .max_connections(4)
+            // pg_dump 처럼 search_path 를 비워 format_type·pg_get_viewdef·pg_get_expr 등이 모든
+            // 이름을 스키마로 한정하게 한다. 역할/DB 의 search_path 에 대상 스키마가 들어 있으면
+            // 타입·뷰 참조가 스키마 없이 출력돼 다른 환경에서 복원할 수 없었다.
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query("SELECT pg_catalog.set_config('search_path', '', false)")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect_with(options)
             .await
             .map_err(|e| AppError::DbConnection {
