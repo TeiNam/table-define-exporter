@@ -109,6 +109,25 @@ fn closing_paren(s: &str, open: usize) -> Option<usize> {
     None
 }
 
+/// 파티션 부모 인덱스 정의의 `ON ONLY` → `ON`. 그대로 쓰면 하위 파티션에 전파되지 않는다.
+/// 인덱스 이름(따옴표 식별자)·문자열 리터럴 속의 ` ON ONLY ` 는 건너뛴다.
+pub(super) fn without_on_only(indexdef: &str) -> String {
+    const ON_ONLY: &str = " ON ONLY ";
+    let mut quote: Option<char> = None;
+    for (i, c) in indexdef.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, ' ') if indexdef[i..].starts_with(ON_ONLY) => {
+                return format!("{} ON {}", &indexdef[..i], &indexdef[i + ON_ONLY.len()..]);
+            }
+            _ => {}
+        }
+    }
+    indexdef.to_string()
+}
+
 /// indexdef 문자열에서 컬럼 블록 `(...)`의 여는/닫는 괄호 바이트 인덱스를 반환한다.
 ///
 /// `USING` 키워드 이후의 첫 번째 `(`를 여는 괄호로 간주하고,
@@ -269,6 +288,21 @@ mod tests {
         assert_eq!(gin.method.as_deref(), Some("GIN"));
         assert_eq!(gin.include, None);
         assert_eq!(gin.predicate, None);
+    }
+
+    #[test]
+    fn on_only_is_replaced_outside_quoted_index_name() {
+        assert_eq!(
+            without_on_only("CREATE INDEX i ON ONLY a.t USING btree (id)"),
+            "CREATE INDEX i ON a.t USING btree (id)"
+        );
+        assert_eq!(
+            without_on_only(r#"CREATE UNIQUE INDEX "x ON ONLY y" ON ONLY a.t USING btree (id)"#),
+            r#"CREATE UNIQUE INDEX "x ON ONLY y" ON a.t USING btree (id)"#
+        );
+        // 파티션이 아닌 테이블 인덱스는 그대로 (리터럴 속 문자열도 건드리지 않음)
+        let plain = "CREATE INDEX i ON a.t USING btree (id) WHERE (note <> 'x ON ONLY y'::text)";
+        assert_eq!(without_on_only(plain), plain);
     }
 
     #[test]

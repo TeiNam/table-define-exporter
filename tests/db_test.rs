@@ -1496,6 +1496,56 @@ fn ddl_with_check_constraint() {
 }
 
 #[test]
+fn ddl_keeps_pg18_not_null_names_no_inherit_and_not_valid() {
+    let column = |name: &str| PgDdlColumn {
+        name: name.to_string(),
+        data_type: "integer".to_string(),
+        is_nullable: false,
+        default_value: None,
+        generated: None,
+        identity: None,
+    };
+    let not_null = |name: &str, column: &str, definition: &str| PgDdlConstraint {
+        name: name.to_string(),
+        constraint_type: PgConstraintType::NotNull,
+        columns: vec![column.to_string()],
+        definition: Some(definition.to_string()),
+    };
+    let columns = vec![
+        column("a"),
+        column("b"),
+        column("c"),
+        column("e"),
+        column("z"),
+    ];
+    let constraints = vec![
+        not_null("t_a_not_null", "a", "NOT NULL a"),
+        not_null("b_must", "b", "NOT NULL b"),
+        not_null("t_c_not_null", "c", "NOT NULL c NO INHERIT"),
+        not_null("e_nn", "e", "NOT NULL e NOT VALID"),
+    ];
+    let ddl = build_pg_ddl_from_metadata("s", "t", &columns, &constraints, &[]).unwrap();
+    assert!(ddl.contains("\"a\" integer NOT NULL,\n"), "{ddl}");
+    assert!(
+        ddl.contains("\"b\" integer CONSTRAINT \"b_must\" NOT NULL,\n"),
+        "{ddl}"
+    );
+    assert!(
+        ddl.contains("\"c\" integer NOT NULL NO INHERIT,\n"),
+        "{ddl}"
+    );
+    // NOT VALID 는 검증되지 않은 상태 그대로 테이블 뒤에서 추가
+    assert!(ddl.contains("\"e\" integer,\n"), "{ddl}");
+    // PG 17 이하(NOT NULL 제약 행 없음)는 컬럼 속성으로
+    assert!(ddl.contains("\"z\" integer NOT NULL\n"), "{ddl}");
+    assert!(!ddl.contains("e_nn"), "{ddl}");
+    assert_eq!(
+        build_pg_fk_ddl("s", "t", &constraints).unwrap(),
+        vec![r#"ALTER TABLE "s"."t" ADD CONSTRAINT "e_nn" NOT NULL e NOT VALID;"#]
+    );
+}
+
+#[test]
 fn ddl_with_indexes() {
     let columns = vec![PgDdlColumn {
         name: "name".to_string(),

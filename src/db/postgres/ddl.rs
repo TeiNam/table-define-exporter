@@ -6,7 +6,7 @@
 
 use crate::{error::AppError, identifier::quote_pg_identifier, model::TableDdl};
 
-use super::parse::{extract_check_expression, quote_column_list};
+use super::parse::{extract_check_expression, quote_column_list, without_on_only};
 use super::types::{
     PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, PgIdentitySequence,
 };
@@ -84,9 +84,17 @@ fn build_table_ddl(
         let quoted_col = quote_pg_identifier(&col.name)?;
         let mut col_def = format!("    {quoted_col} {}", col.data_type);
 
-        // NOT NULL 제약
-        if !col.is_nullable {
-            col_def.push_str(" NOT NULL");
+        // NOT NULL — PG 18+ 은 이름 있는 제약(contype 'n')이라 이름·NO INHERIT 까지 살린다.
+        // NOT VALID 면 빈 테이블에서 곧바로 검증되지 않게 build_pg_fk_ddl 이 ALTER TABLE 로 추가한다.
+        let not_null = constraints.iter().find(|c| {
+            matches!(c.constraint_type, PgConstraintType::NotNull)
+                && c.columns == [col.name.as_str()]
+        });
+        match not_null {
+            Some(c) if is_not_valid(c) => {}
+            Some(c) => col_def.push_str(&not_null_clause(table, &col.name, c)?),
+            None if !col.is_nullable => col_def.push_str(" NOT NULL"),
+            None => {}
         }
 
         // identity 컬럼 (identity 와 DEFAULT 는 함께 올 수 없고 column_default 도 NULL)
@@ -119,7 +127,7 @@ fn build_table_ddl(
         PgConstraintType::Unique => Some(1),
         PgConstraintType::Check { .. } => Some(2),
         PgConstraintType::Exclude { .. } => Some(3),
-        PgConstraintType::ForeignKey { .. } => None,
+        PgConstraintType::ForeignKey { .. } | PgConstraintType::NotNull => None,
     };
     // NOT VALID 제약은 CREATE TABLE 안에 두면 빈 테이블이라 곧바로 검증돼 상태가 바뀌므로
     // build_pg_fk_ddl 이 ALTER TABLE .. NOT VALID 로 뒤에서 추가한다 (pg_dump 와 동일)
@@ -140,17 +148,31 @@ fn build_table_ddl(
         (None, None) => ddl.push_str("\n);\n"),
     }
 
-    // 인덱스 정의 추가. 파티션 부모의 인덱스는 pg_get_indexdef 가 `ON ONLY` 로 돌려주는데,
-    // 그대로 쓰면 하위 파티션에 전파되지 않으므로 `ON` 으로 바꾼다.
+    // 인덱스 정의 추가. 파티션 부모의 인덱스는 pg_get_indexdef 가 `ON ONLY` 로 돌려준다.
     for idx_def in index_defs {
         let idx_def = match partition_key {
-            Some(_) => idx_def.replacen(" ON ONLY ", " ON ", 1),
+            Some(_) => without_on_only(idx_def),
             None => idx_def.clone(),
         };
         ddl.push_str(&format!("{idx_def};\n"));
     }
 
     Ok(ddl)
+}
+
+/// 컬럼의 ` [CONSTRAINT "name"] NOT NULL[ NO INHERIT]` — 이름이 기본값(`{table}_{col}_not_null`)이면
+/// 생략한다 (PG 17 이하에서도 실행되는 열 제약 문법).
+fn not_null_clause(table: &str, column: &str, c: &PgDdlConstraint) -> Result<String, AppError> {
+    let name = if c.name == format!("{table}_{column}_not_null") {
+        String::new()
+    } else {
+        format!(" CONSTRAINT {}", quote_pg_identifier(&c.name)?)
+    };
+    let no_inherit = match &c.definition {
+        Some(definition) if definition.ends_with(" NO INHERIT") => " NO INHERIT",
+        _ => "",
+    };
+    Ok(format!("{name} NOT NULL{no_inherit}"))
 }
 
 /// `NOT VALID` 로 만든(아직 검증하지 않은) 제약인가
@@ -171,6 +193,7 @@ fn constraint_clause(c: &PgDdlConstraint) -> Result<String, AppError> {
         (None, PgConstraintType::Unique) => format!("UNIQUE ({cols})"),
         (None, PgConstraintType::Check { expression }) => format!("CHECK ({expression})"),
         (None, PgConstraintType::Exclude { definition }) => definition.clone(),
+        (None, PgConstraintType::NotNull) => format!("NOT NULL {cols}"),
         (None, PgConstraintType::ForeignKey { .. }) => {
             unreachable!("FK 는 build_pg_fk_ddl 에서 ALTER TABLE 로 만든다")
         }
@@ -221,11 +244,13 @@ pub fn build_pg_fk_ddl(
     let quoted_schema = quote_pg_identifier(schema)?;
     let quoted_table = quote_pg_identifier(table)?;
     let mut statements = Vec::new();
-    // 아직 검증하지 않은(NOT VALID) CHECK 는 테이블 생성 뒤에 그 상태 그대로 추가한다
-    for c in constraints
-        .iter()
-        .filter(|c| matches!(c.constraint_type, PgConstraintType::Check { .. }) && is_not_valid(c))
-    {
+    // 아직 검증하지 않은(NOT VALID) CHECK·NOT NULL 은 테이블 생성 뒤에 그 상태 그대로 추가한다
+    for c in constraints.iter().filter(|c| {
+        matches!(
+            c.constraint_type,
+            PgConstraintType::Check { .. } | PgConstraintType::NotNull
+        ) && is_not_valid(c)
+    }) {
         statements.push(format!(
             "ALTER TABLE {quoted_schema}.{quoted_table} ADD {};",
             constraint_clause(c)?
@@ -407,13 +432,29 @@ pub(super) async fn fetch_table_ddl(
         });
     }
 
-    // 1. 컬럼 정보 조회 (ordinal_position 순)
+    // 1. 컬럼 정보 조회 (ordinal_position 순). 타입 기본값과 다른 COLLATE 는 타입 뒤에 붙이고,
+    //    NOT NULL 은 information_schema(도메인의 NOT NULL 까지 NO)가 아닌 컬럼 자체 속성으로 본다.
+    //    default_after: 다른 테이블의 identity 시퀀스를 쓰는 기본값 — 그 테이블이 먼저 있어야 한다.
     let col_rows = sqlx::query(
         "SELECT \
              c.column_name, \
-             format_type(a.atttypid, a.atttypmod) AS data_type, \
-             c.is_nullable, \
+             format_type(a.atttypid, a.atttypmod) || \
+               CASE WHEN a.attcollation <> 0 AND a.attcollation <> t.typcollation \
+                    THEN ' COLLATE ' || format('%I.%I', colln.nspname, coll.collname) \
+                    ELSE '' END AS data_type, \
+             NOT a.attnotnull AS is_nullable, \
              c.column_default, \
+             EXISTS ( \
+                 SELECT 1 FROM pg_catalog.pg_attrdef ad \
+                 JOIN pg_catalog.pg_depend d \
+                   ON d.classid = 'pg_catalog.pg_attrdef'::regclass AND d.objid = ad.oid \
+                  AND d.refclassid = 'pg_catalog.pg_class'::regclass \
+                 JOIN pg_catalog.pg_depend i \
+                   ON i.classid = 'pg_catalog.pg_class'::regclass AND i.objid = d.refobjid \
+                  AND i.deptype = 'i' AND i.refobjid <> a.attrelid \
+                 JOIN pg_catalog.pg_class seq ON seq.oid = d.refobjid AND seq.relkind = 'S' \
+                 WHERE ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+             ) AS default_after, \
              a.attgenerated::text AS attgenerated, \
              c.generation_expression, \
              a.attidentity::text AS attidentity, \
@@ -435,6 +476,9 @@ pub(super) async fn fetch_table_ddl(
            AND a.attname = c.column_name \
            AND a.attnum > 0 \
            AND NOT a.attisdropped \
+         JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+         LEFT JOIN pg_catalog.pg_collation coll ON coll.oid = a.attcollation \
+         LEFT JOIN pg_catalog.pg_namespace colln ON colln.oid = coll.collnamespace \
          LEFT JOIN pg_catalog.pg_sequence s \
            ON a.attidentity <> '' \
           AND s.seqrelid = pg_get_serial_sequence(format('%I.%I', $1, $2), a.attname)::regclass \
@@ -454,14 +498,31 @@ pub(super) async fn fetch_table_ddl(
     })?;
 
     // 컬럼 메타데이터 변환
+    let quoted_table = format!(
+        "{}.{}",
+        quote_pg_identifier(schema)?,
+        quote_pg_identifier(table)?
+    );
     let mut ddl_columns: Vec<PgDdlColumn> = Vec::new();
+    let mut deferred_defaults: Vec<String> = Vec::new();
     for row in &col_rows {
         // try_get 실패 시 경고 로그 + 기본값 반환 (Requirements 5.2)
         let column_name: String = try_get_or_warn(row, "column_name", schema, table);
         // format_type: 정밀도(timestamp(3))·도메인·사용자 타입(스키마 한정)까지 pg_dump 와 같은 표기
         let data_type: String = try_get_or_warn(row, "data_type", schema, table);
-        let is_nullable: String = try_get_or_warn(row, "is_nullable", schema, table);
+        let is_nullable: bool = try_get_or_warn(row, "is_nullable", schema, table);
         let column_default: Option<String> = try_get_or_warn(row, "column_default", schema, table);
+        let default_after: bool = try_get_or_warn(row, "default_after", schema, table);
+        let column_default = match column_default {
+            Some(default) if default_after => {
+                deferred_defaults.push(format!(
+                    "ALTER TABLE {quoted_table} ALTER COLUMN {} SET DEFAULT {default};",
+                    quote_pg_identifier(&column_name)?
+                ));
+                None
+            }
+            other => other,
+        };
         let attgenerated: String = try_get_or_warn(row, "attgenerated", schema, table);
         let generation_expression: Option<String> =
             try_get_or_warn(row, "generation_expression", schema, table);
@@ -484,7 +545,7 @@ pub(super) async fn fetch_table_ddl(
         ddl_columns.push(PgDdlColumn {
             name: column_name,
             data_type,
-            is_nullable: is_nullable == "YES",
+            is_nullable,
             default_value: column_default,
             generated: PgGenerated::from_catalog(&attgenerated, generation_expression),
             identity: PgIdentity::from_catalog(&attidentity, identity_sequence),
@@ -510,7 +571,12 @@ pub(super) async fn fetch_table_ddl(
         &index_defs,
         &options,
     )?;
-    let mut after = build_pg_fk_ddl(schema, table, &ddl_constraints)?;
+    if foreign.is_some() {
+        let column_options = super::foreign::fetch_column_options_ddl(pool, schema, table).await?;
+        append_statements(&mut create, &column_options);
+    }
+    let mut after = deferred_defaults;
+    after.extend(build_pg_fk_ddl(schema, table, &ddl_constraints)?);
     if partition_key.is_some() {
         let partitions = super::partition::fetch_partitions_ddl(pool, schema, table).await?;
         append_statements(&mut create, &partitions.create);
@@ -522,7 +588,7 @@ pub(super) async fn fetch_table_ddl(
     Ok(TableDdl { create, after })
 }
 
-/// 테이블의 PK/UNIQUE/FK/CHECK 제약 조건을 `pg_constraint` 에서 조회한다 (정의 순서 보존).
+/// 테이블의 PK/UNIQUE/FK/CHECK/EXCLUDE/NOT NULL(PG 18+) 제약 조건을 `pg_constraint` 에서 조회한다.
 ///
 /// DDL 재구성과 정의서용 FK 목록(`PgClient::get_constraints`)이 함께 쓴다.
 pub(super) async fn fetch_constraints(
@@ -580,7 +646,7 @@ pub(super) async fn fetch_constraints(
          LEFT JOIN pg_catalog.pg_namespace ref_ns \
            ON ref_ns.oid = ref_cl.relnamespace \
          WHERE ns.nspname = $1 AND cl.relname = $2 \
-           AND con.contype IN ('p', 'u', 'f', 'c', 'x') \
+           AND con.contype IN ('p', 'u', 'f', 'c', 'x', 'n') \
          ORDER BY \
            CASE con.contype \
              WHEN 'p' THEN 1 \
@@ -588,6 +654,7 @@ pub(super) async fn fetch_constraints(
              WHEN 'f' THEN 3 \
              WHEN 'c' THEN 4 \
              WHEN 'x' THEN 5 \
+             WHEN 'n' THEN 6 \
            END, \
            con.conname",
     )
@@ -661,6 +728,7 @@ pub(super) async fn fetch_constraints(
             "x" => PgConstraintType::Exclude {
                 definition: condef.clone(),
             },
+            "n" => PgConstraintType::NotNull,
             _ => continue,
         };
 
