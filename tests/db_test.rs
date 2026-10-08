@@ -1,8 +1,8 @@
 use proptest::prelude::*;
 use td_export::db::postgres::{
     ParsedIndex, PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity,
-    build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_view_ddl, determine_pg_extra,
-    filter_pg_schemas, is_pg_system_schema, parse_pg_indexdef,
+    build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_materialized_view_ddl, build_pg_view_ddl,
+    determine_pg_extra, filter_pg_schemas, is_pg_system_schema, parse_pg_indexdef,
 };
 use td_export::model::{ColumnInfo, GeneralInfo, TableDef, ViewInfo};
 
@@ -1090,6 +1090,15 @@ fn ddl_foreign_key_keeps_match_and_deferrable_in_grammar_order() {
     // CREATE TABLE 쪽에는 FK 가 없다
     let ddl = build_pg_ddl_from_metadata("p", "child", &columns, &constraints, &[]).unwrap();
     assert!(!ddl.contains("FOREIGN KEY"), "{ddl}");
+}
+
+#[test]
+fn materialized_view_ddl_with_no_data() {
+    let ddl = build_pg_materialized_view_ddl("a", "mv", " SELECT t.id\n   FROM a.t;").unwrap();
+    assert_eq!(
+        ddl,
+        "CREATE MATERIALIZED VIEW \"a\".\"mv\" AS\n SELECT t.id\n   FROM a.t\nWITH NO DATA;\n"
+    );
 }
 
 #[test]

@@ -175,7 +175,13 @@ fn write_sql(
 
     // 모든 테이블을 만든 뒤 실행할 문장 (PostgreSQL FK)
     let mut deferred: Vec<&str> = Vec::new();
-    for t in tables {
+    // 뷰는 참조하는 테이블이 먼저 있어야 하므로 테이블을 모두 쓴 뒤에 쓴다 (각 그룹 안은 이름 순).
+    // ponytail: 뷰가 이름 순서상 뒤에 오는 다른 뷰를 참조하면 여전히 실패 — 필요하면 의존성 정렬.
+    let ordered = tables
+        .iter()
+        .filter(|t| !t.general.is_view())
+        .chain(tables.iter().filter(|t| t.general.is_view()));
+    for t in ordered {
         // Req 2.5, 14.3: 위험 식별자를 포함한 테이블은 출력에서 스킵한다 (DROP은 더 이상
         // 출력하지 않지만, 주석/DDL에 위험 식별자가 새는 것을 막기 위해 검증은 유지).
         if let Err(e) = quote_table_name(db_type, &t.table_name) {
@@ -270,6 +276,20 @@ mod tests {
             .find("/* Types & Sequences */\nCREATE TYPE mood")
             .unwrap();
         assert!(ty < out.find("CREATE TABLE t").unwrap(), "{out}");
+    }
+
+    #[test]
+    fn views_come_after_tables() {
+        let mut view = table("a_view", "CREATE VIEW a_view AS SELECT id FROM t", &[]);
+        view.general.table_type = "VIEW".to_string();
+        let out = render(
+            DbType::MySql,
+            &[view, table("t", "CREATE TABLE t (id int)", &[])],
+        );
+        assert!(
+            out.find("CREATE TABLE t").unwrap() < out.find("CREATE VIEW a_view").unwrap(),
+            "{out}"
+        );
     }
 
     #[test]

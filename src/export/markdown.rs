@@ -90,7 +90,7 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
         writeln!(file, "## {}", t.table_name.to_lowercase())?;
         writeln!(file, "**Information**")?;
 
-        if t.general.table_type == "BASE TABLE" {
+        if t.general.is_table() {
             // 일반 정보 표
             writeln!(file, "|Table type|Engine|Row format|Collate|Comment|")?;
             writeln!(file, "|---|---|---|---|---|")?;
@@ -169,7 +169,7 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                 }
                 writeln!(file)?;
             }
-        } else if t.general.table_type == "VIEW" {
+        } else if t.general.is_view() {
             // 뷰 정보 표
             writeln!(file, "|Table type|Charset|Collate|")?;
             writeln!(file, "|---|---|---|")?;

@@ -209,11 +209,24 @@ impl TableDef {
 /// 테이블 일반 정보
 #[derive(Debug, Clone, Default)]
 pub struct GeneralInfo {
-    pub table_type: String, // "BASE TABLE" 또는 "VIEW"
+    /// "BASE TABLE" / "VIEW" (+ PostgreSQL "FOREIGN" / "MATERIALIZED VIEW")
+    pub table_type: String,
     pub engine: Option<String>,
     pub row_format: Option<String>,
     pub collate: Option<String>,
     pub comment: Option<String>,
+}
+
+impl GeneralInfo {
+    /// 컬럼 표를 가진 테이블인가 (일반 테이블, PostgreSQL 외부 테이블)
+    pub fn is_table(&self) -> bool {
+        matches!(self.table_type.as_str(), "BASE TABLE" | "FOREIGN")
+    }
+
+    /// 정의 SQL 을 가진 뷰인가 (뷰, PostgreSQL 머티리얼라이즈드 뷰)
+    pub fn is_view(&self) -> bool {
+        matches!(self.table_type.as_str(), "VIEW" | "MATERIALIZED VIEW")
+    }
 }
 
 /// 컬럼 정보
