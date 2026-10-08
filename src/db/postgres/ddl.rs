@@ -7,7 +7,9 @@
 use crate::{error::AppError, identifier::quote_pg_identifier, model::TableDdl};
 
 use super::parse::{extract_check_expression, quote_column_list};
-use super::types::{PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity};
+use super::types::{
+    PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, PgIdentitySequence,
+};
 use crate::db::try_get_or_warn;
 
 /// 테이블 메타데이터로부터 PostgreSQL DDL 문자열을 재구성한다.
@@ -89,7 +91,7 @@ fn build_table_ddl(
 
         // identity 컬럼 (identity 와 DEFAULT 는 함께 올 수 없고 column_default 도 NULL)
         if let Some(identity) = &col.identity {
-            col_def.push_str(&identity.to_sql());
+            col_def.push_str(&identity.to_sql()?);
         }
 
         // GENERATED ALWAYS AS (...) STORED|VIRTUAL (기본값보다 우선)
@@ -365,8 +367,14 @@ pub(super) async fn fetch_table_ddl(
              a.attgenerated::text AS attgenerated, \
              c.generation_expression, \
              a.attidentity::text AS attidentity, \
+             sn.nspname::text AS identity_seq_schema, \
+             sc.relname::text AS identity_seq_name, \
              s.seqstart AS identity_start, \
-             s.seqincrement AS identity_increment \
+             s.seqincrement AS identity_increment, \
+             s.seqmin AS identity_min, \
+             s.seqmax AS identity_max, \
+             s.seqcache AS identity_cache, \
+             s.seqcycle AS identity_cycle \
          FROM information_schema.columns c \
          JOIN pg_catalog.pg_attribute a \
            ON a.attrelid = ( \
@@ -380,6 +388,8 @@ pub(super) async fn fetch_table_ddl(
          LEFT JOIN pg_catalog.pg_sequence s \
            ON a.attidentity <> '' \
           AND s.seqrelid = pg_get_serial_sequence(format('%I.%I', $1, $2), a.attname)::regclass \
+         LEFT JOIN pg_catalog.pg_class sc ON sc.oid = s.seqrelid \
+         LEFT JOIN pg_catalog.pg_namespace sn ON sn.oid = sc.relnamespace \
          WHERE c.table_schema = $1 AND c.table_name = $2 \
          ORDER BY c.ordinal_position",
     )
@@ -406,9 +416,20 @@ pub(super) async fn fetch_table_ddl(
         let generation_expression: Option<String> =
             try_get_or_warn(row, "generation_expression", schema, table);
         let attidentity: String = try_get_or_warn(row, "attidentity", schema, table);
-        let identity_start: Option<i64> = try_get_or_warn(row, "identity_start", schema, table);
-        let identity_increment: Option<i64> =
-            try_get_or_warn(row, "identity_increment", schema, table);
+        let seq_name: Option<String> = try_get_or_warn(row, "identity_seq_name", schema, table);
+        let identity_sequence = seq_name.map(|name| {
+            let num = |column: &str| -> i64 { try_get_or_warn(row, column, schema, table) };
+            PgIdentitySequence {
+                schema: try_get_or_warn(row, "identity_seq_schema", schema, table),
+                name,
+                start: num("identity_start"),
+                increment: num("identity_increment"),
+                min: num("identity_min"),
+                max: num("identity_max"),
+                cache: num("identity_cache"),
+                cycle: try_get_or_warn(row, "identity_cycle", schema, table),
+            }
+        });
 
         ddl_columns.push(PgDdlColumn {
             name: column_name,
@@ -416,7 +437,7 @@ pub(super) async fn fetch_table_ddl(
             is_nullable: is_nullable == "YES",
             default_value: column_default,
             generated: PgGenerated::from_catalog(&attgenerated, generation_expression),
-            identity: PgIdentity::from_catalog(&attidentity, identity_start, identity_increment),
+            identity: PgIdentity::from_catalog(&attidentity, identity_sequence),
         });
     }
 
