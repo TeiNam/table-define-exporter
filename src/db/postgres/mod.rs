@@ -10,6 +10,7 @@ use crate::{
     },
 };
 
+mod comment;
 mod ddl;
 mod parse;
 mod partition;
@@ -364,7 +365,10 @@ impl PgClient {
     pub async fn get_indexes(&self, schema: &str, table: &str) -> Result<Vec<IndexInfo>, AppError> {
         // pg_indexes에서 인덱스 조회, PRIMARY KEY 제약 조건에 해당하는 인덱스 제외
         let rows = sqlx::query(
-            "SELECT i.indexname, i.indexdef \
+            "SELECT i.indexname, i.indexdef, \
+                    (SELECT pg_get_constraintdef(c.oid) FROM pg_catalog.pg_constraint c \
+                      WHERE c.conindid = format('%I.%I', i.schemaname, i.indexname)::regclass \
+                        AND c.contype = 'x') AS exclusion_def \
              FROM pg_catalog.pg_indexes i \
              WHERE i.schemaname = $1 AND i.tablename = $2 \
                AND NOT EXISTS ( \
@@ -391,20 +395,23 @@ impl PgClient {
             // try_get 실패 시 경고 로그 + 기본값 반환 (Requirements 5.2)
             let index_name: String = try_get_or_warn(row, "indexname", schema, table);
             let indexdef: String = try_get_or_warn(row, "indexdef", schema, table);
+            // EXCLUDE 제약의 인덱스는 연산자(`during WITH &&`)가 제약 정의에만 있으므로 그쪽을 파싱
+            let exclusion_def: Option<String> =
+                try_get_or_warn(row, "exclusion_def", schema, table);
 
             // indexdef 파싱으로 유니크 여부, 컬럼 목록, 파셜 인덱스 predicate 추출
             let ParsedIndex {
                 is_unique,
                 columns,
                 predicate,
-            } = parse_pg_indexdef(&indexdef);
+            } = parse_pg_indexdef(exclusion_def.as_deref().unwrap_or(&indexdef));
 
             indexes.push(IndexInfo {
                 index_name,
                 non_unique: if is_unique { 0 } else { 1 },
                 index_columns: columns,
                 predicate,
-                index_type: None,
+                index_type: exclusion_def.map(|_| "EXCLUDE".to_string()),
             });
         }
         Ok(indexes)

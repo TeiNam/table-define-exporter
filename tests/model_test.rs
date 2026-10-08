@@ -516,6 +516,7 @@ fn index_kind_label() {
     };
     assert_eq!(idx(1, Some("FULLTEXT")).kind_label(), "Fulltext");
     assert_eq!(idx(1, Some("SPATIAL")).kind_label(), "Spatial");
+    assert_eq!(idx(1, Some("EXCLUDE")).kind_label(), "Exclude");
     assert_eq!(idx(0, Some("BTREE")).kind_label(), "Unique");
     assert_eq!(idx(1, Some("BTREE")).kind_label(), "Normal");
     assert_eq!(idx(0, None).kind_label(), "Unique");
