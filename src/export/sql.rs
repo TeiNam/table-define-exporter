@@ -144,6 +144,14 @@ fn quote_table_name(db_type: DbType, table_name: &str) -> Result<String, AppErro
     }
 }
 
+/// SQL 블록 주석 안에 넣을 이름. `/*`(PostgreSQL 은 주석 중첩)·`*/`·줄바꿈을 끊어
+/// 스키마/테이블 이름으로 주석을 닫고 문장을 끼워 넣지 못하게 한다.
+fn comment_text(name: &str) -> String {
+    name.replace("/*", "/ *")
+        .replace("*/", "* /")
+        .replace(['\n', '\r'], " ")
+}
+
 /// SQL 내용을 파일에 기록하는 내부 함수
 fn write_sql(
     file: &mut File,
@@ -155,13 +163,20 @@ fn write_sql(
     let terminator = Terminator::from_db_type(db_type);
 
     // 데이터베이스 헤더 주석
-    writeln!(file, "/* Database : {} */", schema)?;
-    // MySQL: FK 가 뒤에 나오는 테이블을 참조해도 실행되도록 검사를 잠시 끈다 (mysqldump 와 동일)
-    if db_type == DbType::MySql {
-        writeln!(
+    writeln!(file, "/* Database : {} */", comment_text(schema))?;
+    match db_type {
+        // 파일은 UTF-8 이고 리터럴은 '' 이스케이프만 쓴다 — 복원 세션 설정과 무관하게 해석되도록
+        // 고정한다 (standard_conforming_strings=off 면 '\'' 가 문자열을 탈출해 주입이 된다)
+        DbType::Postgres => writeln!(
             file,
-            "SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n"
-        )?;
+            "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\n"
+        )?,
+        // MySQL: 한글 코멘트 등이 깨지지 않게 문자셋을 고정하고, FK 가 뒤에 나오는 테이블을
+        // 참조해도 실행되도록 검사를 잠시 끈다 (mysqldump 와 동일)
+        DbType::MySql => writeln!(
+            file,
+            "SET NAMES utf8mb4;\nSET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n"
+        )?,
     }
 
     // 테이블이 참조하는 사용자 타입·시퀀스를 먼저 (pg_dump 와 동일)
@@ -195,7 +210,7 @@ fn write_sql(
         }
 
         // 테이블 주석
-        writeln!(file, "/* Table : {} */", t.table_name)?;
+        writeln!(file, "/* Table : {} */", comment_text(&t.table_name))?;
         // CREATE DDL만 출력 — DROP 구문은 제외. 원본을 보존하되 Terminator로 정확히 하나의 `;` 종결
         let ddl = t.ddl.as_deref().unwrap_or("");
         writeln!(file, "{}\n\n", terminator.apply(ddl))?;
@@ -276,6 +291,32 @@ mod tests {
             .find("/* Types & Sequences */\nCREATE TYPE mood")
             .unwrap();
         assert!(ty < out.find("CREATE TABLE t").unwrap(), "{out}");
+    }
+
+    #[test]
+    fn comment_text_cannot_close_or_nest_comments() {
+        let name = "x*/ DROP TABLE t; /*\nnext";
+        let safe = comment_text(name);
+        assert!(
+            !safe.contains("*/") && !safe.contains("/*") && !safe.contains('\n'),
+            "{safe}"
+        );
+        let out = render(
+            DbType::Postgres,
+            &[table(name, "CREATE TABLE t (id int)", &[])],
+        );
+        assert!(!out.contains("x*/ DROP"), "{out}");
+    }
+
+    #[test]
+    fn headers_pin_encoding_and_string_semantics() {
+        let pg = render(DbType::Postgres, &[]);
+        assert!(
+            pg.contains("SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;"),
+            "{pg}"
+        );
+        let my = render(DbType::MySql, &[]);
+        assert!(my.contains("SET NAMES utf8mb4;"), "{my}");
     }
 
     #[test]
