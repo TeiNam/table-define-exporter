@@ -12,6 +12,7 @@ use crate::{
 
 mod ddl;
 mod parse;
+mod schema_ddl;
 mod types;
 
 pub use ddl::{build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_view_ddl};
@@ -476,5 +477,10 @@ impl PgClient {
     /// PostgreSQL에는 `pg_get_tabledef()` 내장 함수가 없으므로 직접 재구성한다.
     pub async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<TableDdl, AppError> {
         ddl::fetch_table_ddl(&self.pool, schema, table).await
+    }
+
+    /// 스키마 수준 객체(enum/도메인/복합 타입, 시퀀스) 생성문 — SQL 파일에서 테이블보다 먼저 실행
+    pub async fn get_schema_ddl(&self, schema: &str) -> Result<Vec<String>, AppError> {
+        schema_ddl::fetch_schema_ddl(&self.pool, schema).await
     }
 }

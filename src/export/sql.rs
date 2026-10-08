@@ -68,6 +68,8 @@ pub struct SqlExporter {
     endpoint: String,
     /// DB 종류 (식별자 인용 규칙 + Terminator 선택에 사용) — Req 14.4
     db_type: DbType,
+    /// 스키마명 → 테이블보다 먼저 쓸 문장 (PostgreSQL 사용자 타입·시퀀스)
+    preambles: HashMap<String, Vec<String>>,
 }
 
 impl SqlExporter {
@@ -77,6 +79,7 @@ impl SqlExporter {
             endpoint: String::new(),
             // 초기값은 MySQL. 실제 값은 `setup`에서 `config.db_type`으로 덮어쓴다.
             db_type: DbType::MySql,
+            preambles: HashMap::new(),
         }
     }
 }
@@ -108,13 +111,18 @@ impl Exporter for SqlExporter {
     }
 
     fn write_tables(&mut self, schema: &str, tables: &[TableDef]) -> Result<(), AppError> {
+        let preamble = self.preambles.remove(schema).unwrap_or_default();
         let file = match self.files.get_mut(schema) {
             Some(f) => f,
             None => return Ok(()),
         };
 
-        write_sql(file, schema, tables, self.db_type)
+        write_sql(file, schema, &preamble, tables, self.db_type)
             .map_err(|source| AppError::FileWrite { source })
+    }
+
+    fn set_schema_preamble(&mut self, schema: &str, statements: Vec<String>) {
+        self.preambles.insert(schema.to_string(), statements);
     }
 
     fn finish(&mut self) -> Result<(), AppError> {
@@ -140,6 +148,7 @@ fn quote_table_name(db_type: DbType, table_name: &str) -> Result<String, AppErro
 fn write_sql(
     file: &mut File,
     schema: &str,
+    preamble: &[String],
     tables: &[TableDef],
     db_type: DbType,
 ) -> std::io::Result<()> {
@@ -153,6 +162,15 @@ fn write_sql(
             file,
             "SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n"
         )?;
+    }
+
+    // 테이블이 참조하는 사용자 타입·시퀀스를 먼저 (pg_dump 와 동일)
+    if !preamble.is_empty() {
+        writeln!(file, "/* Types & Sequences */")?;
+        for statement in preamble {
+            writeln!(file, "{statement}")?;
+        }
+        writeln!(file)?;
     }
 
     // 모든 테이블을 만든 뒤 실행할 문장 (PostgreSQL FK)
@@ -200,7 +218,7 @@ mod tests {
     fn render(db_type: DbType, tables: &[TableDef]) -> String {
         use std::io::{Read, Seek};
         let mut file = tempfile::tempfile().unwrap();
-        write_sql(&mut file, "s", tables, db_type).unwrap();
+        write_sql(&mut file, "s", &[], tables, db_type).unwrap();
         file.rewind().unwrap();
         let mut out = String::new();
         file.read_to_string(&mut out).unwrap();
@@ -236,6 +254,22 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("FOREIGN_KEY_CHECKS"), "{out}");
+    }
+
+    #[test]
+    fn preamble_comes_before_tables() {
+        use std::io::{Read, Seek};
+        let mut file = tempfile::tempfile().unwrap();
+        let preamble = vec!["CREATE TYPE mood AS ENUM ('ok');".to_string()];
+        let tables = [table("t", "CREATE TABLE t (m mood)", &[])];
+        write_sql(&mut file, "s", &preamble, &tables, DbType::Postgres).unwrap();
+        file.rewind().unwrap();
+        let mut out = String::new();
+        file.read_to_string(&mut out).unwrap();
+        let ty = out
+            .find("/* Types & Sequences */\nCREATE TYPE mood")
+            .unwrap();
+        assert!(ty < out.find("CREATE TABLE t").unwrap(), "{out}");
     }
 
     #[test]

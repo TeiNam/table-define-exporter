@@ -46,6 +46,9 @@ pub trait DbClient: Send + Sync {
 
     /// DDL 조회 (SQL 포맷 전용)
     async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<TableDdl, AppError>;
+
+    /// 스키마 수준 객체 생성문 (SQL 포맷 전용, 테이블보다 먼저 실행). MySQL 은 없음
+    async fn get_schema_ddl(&self, schema: &str) -> Result<Vec<String>, AppError>;
 }
 
 /// enum 디스패치로 MySQL/PostgreSQL 클라이언트를 통합
@@ -112,6 +115,14 @@ impl DbClient for DbClientEnum {
         match self {
             Self::MySql(c) => c.get_table_ddl(schema, table).await,
             Self::Pg(c) => c.get_table_ddl(schema, table).await,
+        }
+    }
+
+    async fn get_schema_ddl(&self, schema: &str) -> Result<Vec<String>, AppError> {
+        match self {
+            // MySQL 은 사용자 타입이 없고 AUTO_INCREMENT 는 테이블 DDL 에 포함된다
+            Self::MySql(_) => Ok(Vec::new()),
+            Self::Pg(c) => c.get_schema_ddl(schema).await,
         }
     }
 }

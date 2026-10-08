@@ -251,6 +251,14 @@ pub async fn run() -> Result<()> {
         let schema_bytes: usize = tables.iter().map(TableDef::estimated_size).sum();
         tracing::info!("{} metadata in memory: {}", schema, fmt_bytes(schema_bytes));
 
+        // SQL: 테이블이 참조하는 사용자 타입·시퀀스를 파일 앞에 둔다 (실패해도 테이블은 출력)
+        if output_format == OutputFormat::Sql {
+            match db.get_schema_ddl(schema).await {
+                Ok(statements) => exporter.set_schema_preamble(schema, statements),
+                Err(e) => tracing::warn!("{} - 타입/시퀀스 DDL 조회 실패: {}", schema, e),
+            }
+        }
+
         // 테이블 데이터 기록
         exporter
             .write_tables(schema, &tables)
