@@ -4,11 +4,13 @@
 //! 뒤에 `CREATE TABLE child PARTITION OF parent FOR VALUES ...;` 로 붙인다. 컬럼·PK·FK·
 //! 인덱스는 부모에서 상속되므로 다시 쓰지 않고, 하위 파티션에만 따로 만든 제약·인덱스·코멘트만
 //! 덧붙인다. 외부 테이블 파티션은 `CREATE FOREIGN TABLE .. PARTITION OF .. SERVER ..` 로 쓴다.
-// ponytail: 하위 파티션에만 다른 컬럼 기본값·NOT NULL 은 생략 — 필요해지면 ALTER COLUMN 으로 추가.
+// ponytail: 하위 파티션에만 다른 컬럼 기본값과 PG 17 이하의 하위 파티션 전용 NOT NULL 은 생략
+// (PG 18+ 은 NOT NULL 도 제약이라 함께 나온다) — 필요해지면 ALTER COLUMN 으로 추가.
 
 use sqlx::PgPool;
 
-use super::foreign::build_foreign_suffix;
+use super::foreign::{build_foreign_suffix, fetch_column_options_ddl};
+use super::parse::without_on_only;
 use crate::{db::try_get_or_warn, error::AppError, identifier::quote_pg_identifier};
 
 /// 하위 파티션 DDL — 부모 DDL 바로 뒤에 둘 문장과, FK 처럼 모든 테이블 뒤에 둘 문장
@@ -67,6 +69,10 @@ pub(super) async fn fetch_partitions_ddl(
             partition_key.as_deref(),
             foreign.as_deref(),
         )?);
+        if foreign.is_some() {
+            ddl.create
+                .extend(fetch_column_options_ddl(pool, &child_schema, &child).await?);
+        }
         let own = fetch_partition_own_objects(pool, &child_schema, &child).await?;
         ddl.create.extend(own.create);
         ddl.after.extend(own.after);
@@ -87,7 +93,7 @@ async fn fetch_partition_own_objects(
                 pg_get_constraintdef(con.oid) AS definition \
          FROM pg_catalog.pg_constraint con \
          WHERE con.conrelid = format('%I.%I', $1, $2)::regclass \
-           AND con.coninhcount = 0 AND con.contype IN ('p', 'u', 'c', 'x', 'f') \
+           AND con.coninhcount = 0 AND con.contype IN ('p', 'u', 'c', 'x', 'f', 'n') \
          ORDER BY con.contype, con.conname",
     )
     .bind(schema)
@@ -134,8 +140,10 @@ async fn fetch_partition_own_objects(
         }
     }
     for row in &indexes {
+        // 다시 파티션된 하위 파티션의 인덱스도 `ON ONLY` 로 나온다 (말단 파티션은 그대로)
         let definition: String = try_get_or_warn(row, "definition", schema, table);
-        ddl.create.push(format!("{definition};"));
+        ddl.create
+            .push(format!("{};", without_on_only(&definition)));
     }
     Ok(ddl)
 }

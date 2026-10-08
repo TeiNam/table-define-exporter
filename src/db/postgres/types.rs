@@ -128,6 +128,8 @@ pub enum PgConstraintType {
     Check { expression: String },
     /// EXCLUDE 제약 조건 — `pg_get_constraintdef` 원문 (예: `EXCLUDE USING gist (during WITH &&)`)
     Exclude { definition: String },
+    /// NOT NULL 제약 조건 (PG 18+ `contype 'n'` — 이름·`NO INHERIT`·`NOT VALID` 를 가진다)
+    NotNull,
 }
 
 /// DDL 재구성용 제약 조건 메타데이터
