@@ -12,6 +12,7 @@ use crate::{
 
 mod ddl;
 mod parse;
+mod partition;
 mod schema_ddl;
 mod types;
 
@@ -150,6 +151,7 @@ impl PgClient {
     ) -> Result<Vec<TableDef>, AppError> {
         // pg_class 는 반드시 스키마(namespace)까지 맞춰 조인한다. 이름만으로 조인하면
         // 다른 스키마의 같은 이름 테이블 수만큼 행이 늘고 코멘트도 섞인다.
+        // 하위 파티션은 부모 테이블 DDL 에 PARTITION OF 로 붙으므로 목록에서 뺀다 (MySQL 처럼 테이블 하나).
         // 동적 쿼리 구성: except_tables LIKE 패턴 추가
         let mut query_str = String::from(
             "SELECT t.table_name, t.table_type, \
@@ -159,7 +161,8 @@ impl PgClient {
                ON n.nspname = t.table_schema \
              LEFT JOIN pg_catalog.pg_class c \
                ON c.relnamespace = n.oid AND c.relname = t.table_name \
-             WHERE t.table_schema = $1",
+             WHERE t.table_schema = $1 \
+               AND NOT COALESCE(c.relispartition, false)",
         );
 
         // except_tables LIKE 패턴 추가 (파라미터 바인딩)

@@ -35,6 +35,18 @@ pub fn build_pg_ddl_from_metadata(
     constraints: &[PgDdlConstraint],
     index_defs: &[String],
 ) -> Result<String, AppError> {
+    build_table_ddl(schema, table, columns, constraints, index_defs, None)
+}
+
+/// [`build_pg_ddl_from_metadata`] + 파티션 부모의 `PARTITION BY {key}`.
+fn build_table_ddl(
+    schema: &str,
+    table: &str,
+    columns: &[PgDdlColumn],
+    constraints: &[PgDdlConstraint],
+    index_defs: &[String],
+    partition_key: Option<&str>,
+) -> Result<String, AppError> {
     let quoted_schema = quote_pg_identifier(schema)?;
     let quoted_table = quote_pg_identifier(table)?;
 
@@ -108,10 +120,18 @@ pub fn build_pg_ddl_from_metadata(
 
     // 엔트리들을 쉼표+개행으로 결합
     ddl.push_str(&entries.join(",\n"));
-    ddl.push_str("\n);\n");
+    match partition_key {
+        Some(key) => ddl.push_str(&format!("\n) PARTITION BY {key};\n")),
+        None => ddl.push_str("\n);\n"),
+    }
 
-    // 인덱스 정의 추가
+    // 인덱스 정의 추가. 파티션 부모의 인덱스는 pg_get_indexdef 가 `ON ONLY` 로 돌려주는데,
+    // 그대로 쓰면 하위 파티션에 전파되지 않으므로 `ON` 으로 바꾼다.
     for idx_def in index_defs {
+        let idx_def = match partition_key {
+            Some(_) => idx_def.replacen(" ON ONLY ", " ON ", 1),
+            None => idx_def.clone(),
+        };
         ddl.push_str(&format!("{idx_def};\n"));
     }
 
@@ -190,12 +210,14 @@ pub(super) async fn fetch_table_ddl(
     schema: &str,
     table: &str,
 ) -> Result<TableDdl, AppError> {
-    // 0. 뷰면 CREATE VIEW 로 출력 (컬럼으로 재구성하면 빈 CREATE TABLE 이 된다)
-    let view_def: Option<String> = sqlx::query_scalar(
-        "SELECT pg_get_viewdef(c.oid, true) \
+    // 0. 뷰면 CREATE VIEW 로 출력 (컬럼으로 재구성하면 빈 CREATE TABLE 이 된다).
+    //    파티션 부모면 PARTITION BY 키를 받아 둔다.
+    let relation = sqlx::query(
+        "SELECT CASE WHEN c.relkind = 'v' THEN pg_get_viewdef(c.oid, true) END AS view_def, \
+                pg_get_partkeydef(c.oid) AS partition_key \
          FROM pg_catalog.pg_class c \
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-         WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'v'",
+         WHERE n.nspname = $1 AND c.relname = $2",
     )
     .bind(schema)
     .bind(table)
@@ -206,6 +228,13 @@ pub(super) async fn fetch_table_ddl(
         table: table.to_string(),
         source: e,
     })?;
+    let (view_def, partition_key): (Option<String>, Option<String>) = match &relation {
+        Some(row) => (
+            try_get_or_warn(row, "view_def", schema, table),
+            try_get_or_warn(row, "partition_key", schema, table),
+        ),
+        None => (None, None),
+    };
     if let Some(definition) = view_def {
         return Ok(TableDdl {
             create: build_pg_view_ddl(schema, table, &definition)?,
@@ -313,8 +342,20 @@ pub(super) async fn fetch_table_ddl(
         .collect();
 
     // 4. DDL 재구성 — serial 시퀀스(스키마 파일 앞에서 생성)의 소유 관계는 테이블 직후에 복원
-    let mut create =
-        build_pg_ddl_from_metadata(schema, table, &ddl_columns, &ddl_constraints, &index_defs)?;
+    let mut create = build_table_ddl(
+        schema,
+        table,
+        &ddl_columns,
+        &ddl_constraints,
+        &index_defs,
+        partition_key.as_deref(),
+    )?;
+    if partition_key.is_some() {
+        for statement in super::partition::fetch_partitions_ddl(pool, schema, table).await? {
+            create.push_str(&statement);
+            create.push('\n');
+        }
+    }
     for statement in super::schema_ddl::fetch_sequence_ownership(pool, schema, table).await? {
         create.push_str(&statement);
         create.push('\n');
