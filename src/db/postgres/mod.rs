@@ -12,12 +12,15 @@ use crate::{
 
 mod comment;
 mod ddl;
+mod foreign;
 mod parse;
 mod partition;
 mod schema_ddl;
 mod types;
 
-pub use ddl::{build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_view_ddl};
+pub use ddl::{
+    build_pg_ddl_from_metadata, build_pg_fk_ddl, build_pg_materialized_view_ddl, build_pg_view_ddl,
+};
 pub use parse::{ParsedIndex, parse_pg_indexdef};
 pub use types::{
     PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, determine_pg_extra,
@@ -153,24 +156,32 @@ impl PgClient {
         // pg_class 는 반드시 스키마(namespace)까지 맞춰 조인한다. 이름만으로 조인하면
         // 다른 스키마의 같은 이름 테이블 수만큼 행이 늘고 코멘트도 섞인다.
         // 하위 파티션은 부모 테이블 DDL 에 PARTITION OF 로 붙으므로 목록에서 뺀다 (MySQL 처럼 테이블 하나).
+        // 머티리얼라이즈드 뷰는 information_schema.tables 에 없어서 pg_class 에서 따로 더한다.
         // 동적 쿼리 구성: except_tables LIKE 패턴 추가
         let mut query_str = String::from(
-            "SELECT t.table_name, t.table_type, \
-                    obj_description(c.oid, 'pg_class') AS table_comment \
-             FROM information_schema.tables t \
-             LEFT JOIN pg_catalog.pg_namespace n \
-               ON n.nspname = t.table_schema \
-             LEFT JOIN pg_catalog.pg_class c \
-               ON c.relnamespace = n.oid AND c.relname = t.table_name \
-             WHERE t.table_schema = $1 \
-               AND NOT COALESCE(c.relispartition, false)",
+            "SELECT * FROM ( \
+                 SELECT t.table_name::text AS table_name, t.table_type::text AS table_type, \
+                        obj_description(c.oid, 'pg_class') AS table_comment \
+                 FROM information_schema.tables t \
+                 LEFT JOIN pg_catalog.pg_namespace n \
+                   ON n.nspname = t.table_schema \
+                 LEFT JOIN pg_catalog.pg_class c \
+                   ON c.relnamespace = n.oid AND c.relname = t.table_name \
+                 WHERE t.table_schema = $1 \
+                   AND NOT COALESCE(c.relispartition, false) \
+                 UNION ALL \
+                 SELECT c.relname::text, 'MATERIALIZED VIEW', obj_description(c.oid, 'pg_class') \
+                 FROM pg_catalog.pg_class c \
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = $1 AND c.relkind = 'm' \
+             ) relations WHERE true",
         );
 
         // except_tables LIKE 패턴 추가 (파라미터 바인딩)
         for i in 0..except.len() {
-            query_str.push_str(&format!(" AND t.table_name NOT LIKE ${}", i + 2));
+            query_str.push_str(&format!(" AND table_name NOT LIKE ${}", i + 2));
         }
-        query_str.push_str(" ORDER BY t.table_name");
+        query_str.push_str(" ORDER BY table_name");
 
         // SQL 골격은 코드로만 생성하고 사용자 값(schema/except 패턴)은 전부 `$n` 바인딩한다.
         // 동적 문자열이지만 주입 위험이 없으므로 AssertSqlSafe로 감싼다 (sqlx 0.9 요구).
@@ -467,7 +478,7 @@ impl PgClient {
             .collect())
     }
 
-    /// 뷰 정의 조회 (VIEW 전용)
+    /// 뷰 정의 조회 (VIEW / MATERIALIZED VIEW)
     ///
     /// `pg_get_viewdef(oid, true)` OID 기반 조회로 뷰 정의 SQL을 가져온다.
     /// `pg_class` + `pg_namespace` 조인으로 뷰의 OID를 찾고 `pg_get_viewdef`를 호출한다.
@@ -478,7 +489,7 @@ impl PgClient {
             "SELECT pg_get_viewdef(c.oid, true) AS view_def \
              FROM pg_catalog.pg_class c \
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-             WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = 'v'",
+             WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('v', 'm')",
         )
         .bind(schema)
         .bind(table)

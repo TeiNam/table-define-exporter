@@ -142,6 +142,8 @@ RUST_LOG=debug ./td-export
 - 테이블별: 테이블 주석(`/* Table : ... */`) + 원본 CREATE DDL (정확히 하나의 `;`로 종결)
 - `DROP TABLE IF EXISTS` 구문은 출력하지 않습니다 (CREATE DDL만 출력). 단, 위험 식별자를 포함한 테이블은 안전을 위해 출력에서 스킵합니다.
 - 파일을 그대로 실행할 수 있도록 FK 순서를 처리합니다 — MySQL은 mysqldump처럼 파일 앞뒤에서 `FOREIGN_KEY_CHECKS`를 잠시 끄고 원래 값으로 되돌리고, PostgreSQL은 pg_dump처럼 FK를 `CREATE TABLE` 밖으로 빼 파일 끝 `/* Foreign Keys */`에 `ALTER TABLE ... ADD CONSTRAINT`로 모읍니다. PostgreSQL에서 다른 스키마를 참조하는 FK가 있으면 참조되는 스키마의 파일을 먼저 실행하세요.
+- 뷰는 참조하는 테이블보다 늦게 만들어지도록 모든 테이블 뒤에 출력합니다.
+- PostgreSQL은 테이블이 참조하는 사용자 타입(enum·도메인·복합 타입)과 시퀀스 생성문을 파일 맨 앞 `/* Types & Sequences */`에 출력하고, 코멘트는 `COMMENT ON` 문으로 붙입니다. 파티션 테이블은 부모 DDL 뒤에 `PARTITION OF`로 하위 파티션을 이어 붙이고, 머티리얼라이즈드 뷰는 `WITH NO DATA`(데이터는 `REFRESH`로 채움), 외부 테이블은 `CREATE FOREIGN TABLE ... SERVER ...`로 출력합니다 (`CREATE SERVER`·USER MAPPING은 출력하지 않으므로 실행 전에 같은 이름의 서버가 있어야 합니다).
 
 ## 지원 데이터베이스
 
@@ -158,7 +160,8 @@ RUST_LOG=debug ./td-export
 
 - PostgreSQL 13, 14, 15, 16, 17, 18 지원, 기본 포트 5432
 - `information_schema` + `pg_catalog`에서 메타데이터 수집
-- DDL 재구성 방식 (FK 해석은 단일 JOIN 쿼리로 처리 — N+1 없음)
+- DDL 재구성 방식 (FK 해석은 단일 JOIN 쿼리로 처리 — N+1 없음). 타입은 pg_dump와 같은 `format_type` 표기 (`integer`, `character varying(11)`, `timestamp(3) without time zone`)
+- 하위 파티션은 목록에 따로 나오지 않고 부모 테이블에 포함, 머티리얼라이즈드 뷰·외부 테이블 지원
 - 큰따옴표(`"`) 식별자 인용
 
 #### PostgreSQL 권한 요구사항

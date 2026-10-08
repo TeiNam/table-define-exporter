@@ -35,22 +35,44 @@ pub fn build_pg_ddl_from_metadata(
     constraints: &[PgDdlConstraint],
     index_defs: &[String],
 ) -> Result<String, AppError> {
-    build_table_ddl(schema, table, columns, constraints, index_defs, None)
+    build_table_ddl(
+        schema,
+        table,
+        columns,
+        constraints,
+        index_defs,
+        &TableOptions::default(),
+    )
 }
 
-/// [`build_pg_ddl_from_metadata`] + 파티션 부모의 `PARTITION BY {key}`.
+/// 일반 테이블이 아닌 경우의 DDL 옵션
+#[derive(Default)]
+struct TableOptions<'a> {
+    /// 파티션 부모의 `PARTITION BY {key}` 키
+    partition_key: Option<&'a str>,
+    /// 외부 테이블의 `SERVER .. OPTIONS (..)` 절
+    foreign: Option<&'a str>,
+}
+
+/// [`build_pg_ddl_from_metadata`] + 파티션 부모(`PARTITION BY`) / 외부 테이블(`CREATE FOREIGN TABLE`).
 fn build_table_ddl(
     schema: &str,
     table: &str,
     columns: &[PgDdlColumn],
     constraints: &[PgDdlConstraint],
     index_defs: &[String],
-    partition_key: Option<&str>,
+    options: &TableOptions,
 ) -> Result<String, AppError> {
+    let partition_key = options.partition_key;
     let quoted_schema = quote_pg_identifier(schema)?;
     let quoted_table = quote_pg_identifier(table)?;
 
-    let mut ddl = format!("CREATE TABLE {quoted_schema}.{quoted_table} (\n");
+    let keyword = if options.foreign.is_some() {
+        "CREATE FOREIGN TABLE"
+    } else {
+        "CREATE TABLE"
+    };
+    let mut ddl = format!("{keyword} {quoted_schema}.{quoted_table} (\n");
 
     // 컬럼 정의와 제약 조건을 모두 모아서 쉼표로 구분
     let mut entries: Vec<String> = Vec::new();
@@ -128,9 +150,10 @@ fn build_table_ddl(
 
     // 엔트리들을 쉼표+개행으로 결합
     ddl.push_str(&entries.join(",\n"));
-    match partition_key {
-        Some(key) => ddl.push_str(&format!("\n) PARTITION BY {key};\n")),
-        None => ddl.push_str("\n);\n"),
+    match (options.foreign, partition_key) {
+        (Some(foreign), _) => ddl.push_str(&format!("\n) {foreign};\n")),
+        (None, Some(key)) => ddl.push_str(&format!("\n) PARTITION BY {key};\n")),
+        (None, None) => ddl.push_str("\n);\n"),
     }
 
     // 인덱스 정의 추가. 파티션 부모의 인덱스는 pg_get_indexdef 가 `ON ONLY` 로 돌려주는데,
@@ -144,6 +167,26 @@ fn build_table_ddl(
     }
 
     Ok(ddl)
+}
+
+/// 인덱스 정의처럼 `;` 없이 온 문장에 종결자를 붙인다.
+fn terminate(statements: &[String]) -> Vec<String> {
+    statements.iter().map(|s| format!("{s};")).collect()
+}
+
+/// 머티리얼라이즈드 뷰 정의로 `CREATE MATERIALIZED VIEW .. AS .. WITH NO DATA;` 를 만든다.
+/// pg_dump 의 스키마 전용 출력과 같이 데이터 없이 만들고, 채우려면 `REFRESH` 를 실행한다.
+pub fn build_pg_materialized_view_ddl(
+    schema: &str,
+    view: &str,
+    definition: &str,
+) -> Result<String, AppError> {
+    let quoted_schema = quote_pg_identifier(schema)?;
+    let quoted_view = quote_pg_identifier(view)?;
+    let body = definition.trim_end().trim_end_matches(';');
+    Ok(format!(
+        "CREATE MATERIALIZED VIEW {quoted_schema}.{quoted_view} AS\n{body}\nWITH NO DATA;\n"
+    ))
 }
 
 /// DDL 뒤에 문장들을 한 줄씩 붙인다.
@@ -226,13 +269,18 @@ pub(super) async fn fetch_table_ddl(
     schema: &str,
     table: &str,
 ) -> Result<TableDdl, AppError> {
-    // 0. 뷰면 CREATE VIEW 로 출력 (컬럼으로 재구성하면 빈 CREATE TABLE 이 된다).
-    //    파티션 부모면 PARTITION BY 키를 받아 둔다.
+    // 0. 뷰/머티리얼라이즈드 뷰면 CREATE [MATERIALIZED] VIEW 로 출력 (컬럼으로 재구성하면
+    //    빈 CREATE TABLE 이 된다). 파티션 부모면 PARTITION BY 키를, 외부 테이블이면 서버·옵션을 받는다.
     let relation = sqlx::query(
-        "SELECT CASE WHEN c.relkind = 'v' THEN pg_get_viewdef(c.oid, true) END AS view_def, \
-                pg_get_partkeydef(c.oid) AS partition_key \
+        "SELECT c.relkind::text AS relkind, \
+                CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END AS view_def, \
+                pg_get_partkeydef(c.oid) AS partition_key, \
+                fs.srvname::text AS foreign_server, \
+                ft.ftoptions AS foreign_options \
          FROM pg_catalog.pg_class c \
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         LEFT JOIN pg_catalog.pg_foreign_table ft ON ft.ftrelid = c.oid \
+         LEFT JOIN pg_catalog.pg_foreign_server fs ON fs.oid = ft.ftserver \
          WHERE n.nspname = $1 AND c.relname = $2",
     )
     .bind(schema)
@@ -244,16 +292,36 @@ pub(super) async fn fetch_table_ddl(
         table: table.to_string(),
         source: e,
     })?;
-    let (view_def, partition_key): (Option<String>, Option<String>) = match &relation {
-        Some(row) => (
-            try_get_or_warn(row, "view_def", schema, table),
-            try_get_or_warn(row, "partition_key", schema, table),
-        ),
-        None => (None, None),
+    let get_text = |column: &str| -> Option<String> {
+        relation
+            .as_ref()
+            .and_then(|row| try_get_or_warn(row, column, schema, table))
+    };
+    let relkind = get_text("relkind").unwrap_or_default();
+    let view_def = get_text("view_def");
+    let partition_key = get_text("partition_key");
+    let foreign = match get_text("foreign_server") {
+        Some(server) => {
+            let options: Option<Vec<String>> = relation
+                .as_ref()
+                .and_then(|row| try_get_or_warn(row, "foreign_options", schema, table));
+            Some(super::foreign::build_foreign_suffix(
+                &server,
+                &options.unwrap_or_default(),
+            )?)
+        }
+        None => None,
     };
     let comments = super::comment::fetch_comment_ddl(pool, schema, table).await?;
     if let Some(definition) = view_def {
-        let mut create = build_pg_view_ddl(schema, table, &definition)?;
+        let mut create = if relkind == "m" {
+            let index_defs = fetch_index_defs(pool, schema, table).await?;
+            let mut ddl = build_pg_materialized_view_ddl(schema, table, &definition)?;
+            append_statements(&mut ddl, &terminate(&index_defs));
+            ddl
+        } else {
+            build_pg_view_ddl(schema, table, &definition)?
+        };
         append_statements(&mut create, &comments);
         return Ok(TableDdl {
             create,
@@ -329,45 +397,21 @@ pub(super) async fn fetch_table_ddl(
     // 2. 제약 조건 조회 (pg_constraint)
     let ddl_constraints = fetch_constraints(pool, schema, table).await?;
 
-    // 3. 인덱스 정의 조회 (PK/UQ 제약 조건 인덱스 제외)
-    let index_rows = sqlx::query(
-        "SELECT pg_get_indexdef(i.indexrelid) AS indexdef \
-         FROM pg_catalog.pg_index i \
-         JOIN pg_catalog.pg_class cl ON cl.oid = i.indrelid \
-         JOIN pg_catalog.pg_namespace ns ON ns.oid = cl.relnamespace \
-         WHERE ns.nspname = $1 AND cl.relname = $2 \
-           AND NOT i.indisprimary \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM pg_catalog.pg_constraint con \
-               WHERE con.conindid = i.indexrelid \
-                 AND con.contype IN ('p', 'u', 'x') \
-           ) \
-         ORDER BY i.indexrelid",
-    )
-    .bind(schema)
-    .bind(table)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::MetadataQuery {
-        schema: schema.to_string(),
-        table: table.to_string(),
-        source: e,
-    })?;
-
-    let index_defs: Vec<String> = index_rows
-        .iter()
-        .map(|row| try_get_or_warn::<_, String>(row, "indexdef", schema, table))
-        .filter(|s| !s.is_empty())
-        .collect();
+    // 3. 인덱스 정의 조회 (PK/UQ/EXCLUDE 제약 조건 인덱스 제외)
+    let index_defs = fetch_index_defs(pool, schema, table).await?;
 
     // 4. DDL 재구성 — serial 시퀀스(스키마 파일 앞에서 생성)의 소유 관계는 테이블 직후에 복원
+    let options = TableOptions {
+        partition_key: partition_key.as_deref(),
+        foreign: foreign.as_deref(),
+    };
     let mut create = build_table_ddl(
         schema,
         table,
         &ddl_columns,
         &ddl_constraints,
         &index_defs,
-        partition_key.as_deref(),
+        &options,
     )?;
     if partition_key.is_some() {
         let partitions = super::partition::fetch_partitions_ddl(pool, schema, table).await?;
@@ -513,4 +557,42 @@ pub(super) async fn fetch_constraints(
     }
 
     Ok(ddl_constraints)
+}
+
+/// 릴레이션의 인덱스 정의 (`pg_get_indexdef`). PK/UNIQUE/EXCLUDE 제약이 만든 인덱스는 제약으로
+/// 출력되므로 제외한다. 테이블·머티리얼라이즈드 뷰 공용.
+async fn fetch_index_defs(
+    pool: &sqlx::PgPool,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<String>, AppError> {
+    let index_rows = sqlx::query(
+        "SELECT pg_get_indexdef(i.indexrelid) AS indexdef \
+         FROM pg_catalog.pg_index i \
+         JOIN pg_catalog.pg_class cl ON cl.oid = i.indrelid \
+         JOIN pg_catalog.pg_namespace ns ON ns.oid = cl.relnamespace \
+         WHERE ns.nspname = $1 AND cl.relname = $2 \
+           AND NOT i.indisprimary \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM pg_catalog.pg_constraint con \
+               WHERE con.conindid = i.indexrelid \
+                 AND con.contype IN ('p', 'u', 'x') \
+           ) \
+         ORDER BY i.indexrelid",
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::MetadataQuery {
+        schema: schema.to_string(),
+        table: table.to_string(),
+        source: e,
+    })?;
+
+    Ok(index_rows
+        .iter()
+        .map(|row| try_get_or_warn::<_, String>(row, "indexdef", schema, table))
+        .filter(|s| !s.is_empty())
+        .collect())
 }

@@ -122,7 +122,7 @@ async fn enrich_table_inner(
 ) -> TableDef {
     match output_format {
         OutputFormat::Excel | OutputFormat::Markdown => {
-            if table.general.table_type == "BASE TABLE" {
+            if table.general.is_table() {
                 // 개별 테이블 실패는 warn 레벨로 로그하여 Req 9.3 충족:
                 // "한 테이블의 메타데이터 조회가 실패할 때, 해당 테이블의 에러를
                 // 로그하고 다른 테이블의 수집을 계속 진행한다."
@@ -149,7 +149,7 @@ async fn enrich_table_inner(
                         return table;
                     }
                 }
-            } else if table.general.table_type == "VIEW" {
+            } else if table.general.is_view() {
                 match db.get_view_info(&schema, &table.table_name).await {
                     Ok(view) => table.view = Some(view),
                     Err(e) => {

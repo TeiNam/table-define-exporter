@@ -173,7 +173,7 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
         ws.merge_range(row, 0, row, 9, "Column Information", &title_fmt)?;
         row += 1;
 
-        if t.general.table_type == "BASE TABLE" {
+        if t.general.is_table() {
             // 컬럼 헤더
             ws.write_with_format(row, 0, "No", &title_fmt)?;
             ws.write_with_format(row, 1, "Column", &title_fmt)?;
@@ -261,7 +261,7 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
                     row += 1;
                 }
             }
-        } else if t.general.table_type == "VIEW" {
+        } else if t.general.is_view() {
             // View Create SQL 섹션
             ws.merge_range(row, 0, row, 9, "View Create SQL", &title_fmt)?;
             row += 1;
@@ -309,7 +309,7 @@ fn write_tables_to_sheet(ws: &mut Worksheet, tables: &[TableDef]) -> Result<(), 
         ws.merge_range(row, 4, row, 5, "Collation", &title_fmt)?;
 
         // VIEW의 Collation은 ViewInfo.collate 사용, BASE TABLE은 general.collate 사용
-        let collation = if t.general.table_type == "VIEW" {
+        let collation = if t.general.is_view() {
             t.view.as_ref().map(|v| v.collate.as_str()).unwrap_or("")
         } else {
             t.general.collate.as_deref().unwrap_or("")
