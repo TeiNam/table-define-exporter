@@ -167,10 +167,20 @@ fn write_sql(
     match db_type {
         // 파일은 UTF-8 이고 리터럴은 '' 이스케이프만 쓴다 — 복원 세션 설정과 무관하게 해석되도록
         // 고정한다 (standard_conforming_strings=off 면 '\'' 가 문자열을 탈출해 주입이 된다)
-        DbType::Postgres => writeln!(
-            file,
-            "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\n"
-        )?,
+        DbType::Postgres => {
+            writeln!(
+                file,
+                "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;"
+            )?;
+            // DDL 이 스키마로 한정돼 있으므로 빈 DB 에서도 실행되게 스키마부터 만든다
+            match quote_pg_identifier(schema) {
+                Ok(quoted) => writeln!(file, "CREATE SCHEMA IF NOT EXISTS {quoted};\n")?,
+                Err(e) => {
+                    tracing::warn!(schema, error = %e, "위험한 스키마 이름 — CREATE SCHEMA 생략");
+                    writeln!(file)?;
+                }
+            }
+        }
         // MySQL: 한글 코멘트 등이 깨지지 않게 문자셋을 고정하고, FK 가 뒤에 나오는 테이블을
         // 참조해도 실행되도록 검사를 잠시 끈다 (mysqldump 와 동일)
         DbType::MySql => writeln!(
@@ -312,7 +322,10 @@ mod tests {
     fn headers_pin_encoding_and_string_semantics() {
         let pg = render(DbType::Postgres, &[]);
         assert!(
-            pg.contains("SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;"),
+            pg.contains(
+                "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\n\
+                 CREATE SCHEMA IF NOT EXISTS \"s\";"
+            ),
             "{pg}"
         );
         let my = render(DbType::MySql, &[]);

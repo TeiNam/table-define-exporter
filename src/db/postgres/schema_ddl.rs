@@ -32,6 +32,12 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
         source: e,
     };
     let mut statements = Vec::new();
+    // 객체 하나(예: 이름에 위험 문자가 든 타입)가 실패해도 나머지 타입·시퀀스는 내보낸다.
+    // 예전엔 `?` 로 누적 결과 전체를 버려, 정상 enum 을 쓰는 테이블까지 실행할 수 없었다.
+    let mut push = |kind: &str, name: &str, result: Result<String, AppError>| match result {
+        Ok(statement) => statements.push(statement),
+        Err(e) => tracing::warn!("{schema}.{name} ({kind}) 생성문 생략: {e}"),
+    };
 
     let enums = sqlx::query(
         "SELECT t.typname::text AS name, \
@@ -50,7 +56,7 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
     for row in &enums {
         let name: String = try_get_or_warn(row, "name", schema, LABEL);
         let labels: Vec<String> = try_get_or_warn(row, "labels", schema, LABEL);
-        statements.push(build_enum_ddl(schema, &name, &labels)?);
+        push("enum", &name, build_enum_ddl(schema, &name, &labels));
     }
 
     let domains = sqlx::query(
@@ -85,14 +91,15 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
             .into_iter()
             .zip(check_defs.unwrap_or_default())
             .collect();
-        statements.push(build_domain_ddl(
+        let ddl = build_domain_ddl(
             schema,
             &name,
             &base_type,
             default_value.as_deref(),
             not_null,
             &checks,
-        )?);
+        );
+        push("domain", &name, ddl);
     }
 
     let composites = sqlx::query(
@@ -124,7 +131,11 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
             .into_iter()
             .zip(types.unwrap_or_default())
             .collect();
-        statements.push(build_composite_ddl(schema, &name, &attrs)?);
+        push(
+            "composite type",
+            &name,
+            build_composite_ddl(schema, &name, &attrs),
+        );
     }
 
     let sequences = sqlx::query(
@@ -157,7 +168,11 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
             cache: try_get_or_warn(row, "seqcache", schema, LABEL),
             cycle: try_get_or_warn(row, "seqcycle", schema, LABEL),
         };
-        statements.push(build_sequence_ddl(schema, &name, &sequence)?);
+        push(
+            "sequence",
+            &name,
+            build_sequence_ddl(schema, &name, &sequence),
+        );
     }
 
     Ok(statements)
