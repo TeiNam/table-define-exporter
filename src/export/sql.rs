@@ -178,11 +178,11 @@ fn order_views<'a>(schema: &str, views: Vec<&'a TableDef>, db_type: DbType) -> V
 /// `ddl` 이 `schema.name` 뷰를 참조하는가 (DB 별 인용 형태, 앞뒤가 식별자 문자가 아닐 때만)
 fn references_view(ddl: &str, schema: &str, name: &str, db_type: DbType) -> bool {
     let needles: Vec<String> = match db_type {
-        DbType::MySql => vec![format!(
-            "`{}`.`{}`",
-            schema.replace('`', "``"),
-            name.replace('`', "``")
-        )],
+        // MySQL 뷰 정의는 mysqldump 처럼 해당 DB 를 USE 한 뒤 받아 같은 DB 객체는 `name` 만 남는다
+        DbType::MySql => {
+            let quoted = |s: &str| format!("`{}`", s.replace('`', "``"));
+            vec![format!("{}.{}", quoted(schema), quoted(name)), quoted(name)]
+        }
         DbType::Postgres => {
             let quoted = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
             [schema.to_string(), quoted(schema)]
@@ -196,8 +196,10 @@ fn references_view(ddl: &str, schema: &str, name: &str, db_type: DbType) -> bool
         ddl.match_indices(needle.as_str()).any(|(i, m)| {
             let before = ddl[..i].chars().next_back();
             let after = ddl[i + m.len()..].chars().next();
-            !before.is_some_and(|c| is_ident(c) || c == '"' || c == '.')
-                && !after.is_some_and(is_ident)
+            // 앞이 `.`(다른 객체의 컬럼)·`=`/`@`(MySQL DEFINER)이거나 별칭(` AS `)이면 참조가 아니다
+            !before.is_some_and(|c| is_ident(c) || matches!(c, '"' | '`' | '.' | '=' | '@'))
+                && !after.is_some_and(|c| is_ident(c) || c == '`')
+                && !ddl[..i].ends_with(" AS ")
         })
     })
 }
@@ -441,6 +443,13 @@ mod tests {
             "s",
             "z_view",
             DbType::MySql
+        ));
+        // MySQL 비한정 정의: 테이블 참조·컬럼 한정자는 의존, 같은 이름의 컬럼·별칭·DEFINER 는 아님
+        let my = |ddl: &str| references_view(ddl, "s", "z_view", DbType::MySql);
+        assert!(my("select `z_view`.`id` AS `id` from `z_view`"));
+        assert!(my("select count(0) AS `n` from (`t` join `z_view`)"));
+        assert!(!my(
+            "DEFINER=`z_view`@`%` VIEW `a` AS select `t`.`z_view` AS `z_view` from `t`"
         ));
         // 순환(오탐)이어도 모든 뷰를 한 번씩 낸다
         let cyc = render(

@@ -268,18 +268,18 @@ impl MySqlClient {
         } else {
             "column_name"
         };
+        // 컬럼 단위로 읽어 Rust 에서 묶는다 — GROUP_CONCAT 은 group_concat_max_len(기본 1024바이트)
+        // 에서 잘려 긴 함수형 인덱스 식·많은 컬럼이 조용히 사라진다.
         let sql = format!(
             "SELECT CAST(index_name AS CHAR) AS index_name, \
              CAST(non_unique AS SIGNED) AS non_unique_flag, \
              CAST(index_type AS CHAR) AS index_type, \
-             CAST(GROUP_CONCAT(CONCAT({column_expr}, \
+             CAST(CONCAT({column_expr}, \
                  IF(sub_part IS NULL OR index_type = 'SPATIAL', '', CONCAT('(', sub_part, ')')), \
-                 IF(collation = 'D', ' DESC', '')) \
-               ORDER BY seq_in_index) AS CHAR) AS index_columns \
+                 IF(collation = 'D', ' DESC', '')) AS CHAR) AS index_column \
              FROM information_schema.STATISTICS \
              WHERE table_schema = ? AND table_name = ? AND index_name != 'PRIMARY' \
-             GROUP BY index_name, non_unique, index_type \
-             ORDER BY index_name"
+             ORDER BY index_name, seq_in_index"
         );
         // 동적 부분은 위 두 상수 중 하나뿐이고 사용자 값은 전부 `?` 바인딩
         let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
@@ -293,24 +293,38 @@ impl MySqlClient {
                 source: e,
             })?;
 
-        let mut indexes = Vec::new();
+        let mut indexes: Vec<IndexInfo> = Vec::new();
         for row in rows {
             use sqlx::Row;
-            indexes.push(IndexInfo {
-                index_name: try_get_or_warn(&row, "index_name", schema, table),
-                // 실패 시 "Unique가 아님"(=1) 기본값 유지 — 단, 조용히 넘기지 않고 경고
-                non_unique: match row.try_get::<i64, _>("non_unique_flag") {
-                    Ok(v) => i32::from(v != 0),
-                    Err(e) => {
-                        warn_missing_column_once(schema, table, "non_unique_flag", &e);
-                        1
+            let index_name: String = try_get_or_warn(&row, "index_name", schema, table);
+            // GROUP_CONCAT 처럼 NULL 은 건너뛰고 쉼표로 잇는다
+            let column: Option<String> = try_get_or_warn(&row, "index_column", schema, table);
+            match indexes.last_mut() {
+                // ORDER BY index_name 이라 같은 인덱스의 컬럼은 연속해서 온다
+                Some(last) if last.index_name == index_name => {
+                    if let Some(column) = column {
+                        if !last.index_columns.is_empty() {
+                            last.index_columns.push(',');
+                        }
+                        last.index_columns.push_str(&column);
                     }
-                },
-                index_columns: try_get_or_warn(&row, "index_columns", schema, table),
-                predicate: None,
-                index_type: try_get_or_warn(&row, "index_type", schema, table),
-                include_columns: None,
-            });
+                }
+                _ => indexes.push(IndexInfo {
+                    index_name,
+                    // 실패 시 "Unique가 아님"(=1) 기본값 유지 — 단, 조용히 넘기지 않고 경고
+                    non_unique: match row.try_get::<i64, _>("non_unique_flag") {
+                        Ok(v) => i32::from(v != 0),
+                        Err(e) => {
+                            warn_missing_column_once(schema, table, "non_unique_flag", &e);
+                            1
+                        }
+                    },
+                    index_columns: column.unwrap_or_default(),
+                    predicate: None,
+                    index_type: try_get_or_warn(&row, "index_type", schema, table),
+                    include_columns: None,
+                }),
+            }
         }
         Ok(indexes)
     }
@@ -325,6 +339,7 @@ impl MySqlClient {
         // CAST(... AS CHAR): MySQL 8.0~8.4 information_schema VARBINARY 호환
         // FK 컬럼 단위로 읽어 Rust 에서 묶는다. 예전처럼 referenced_column_name 까지
         // GROUP BY 하면 다중 컬럼 FK 가 컬럼 수만큼 여러 줄로 갈라진다.
+        // 이 테이블의 UNIQUE 키가 다른 테이블 FK 와 이름이 같아도 섞이지 않게 테이블·참조 여부로 거른다.
         let rows = sqlx::query(
             "SELECT CAST(kcu.constraint_name AS CHAR) AS constraint_name, \
              CAST(kcu.column_name AS CHAR) AS column_name, \
@@ -337,8 +352,9 @@ impl MySqlClient {
              JOIN information_schema.REFERENTIAL_CONSTRAINTS rc \
                ON kcu.constraint_name = rc.constraint_name \
                AND kcu.constraint_schema = rc.constraint_schema \
+               AND kcu.table_name = rc.table_name \
              WHERE kcu.table_schema = ? AND kcu.table_name = ? \
-               AND kcu.constraint_name != 'PRIMARY' \
+               AND kcu.referenced_table_name IS NOT NULL \
              ORDER BY kcu.constraint_name, kcu.ordinal_position",
         )
         .bind(schema)
@@ -409,25 +425,9 @@ impl MySqlClient {
         Ok(constraints)
     }
 
-    /// 뷰 정의 조회 (VIEW 전용)
-    /// `SHOW CREATE TABLE {schema}.{table}`을 실행하여 뷰 정의를 가져온다.
-    /// 스키마/테이블 이름은 백틱으로 안전하게 인용한다.
+    /// 뷰 정의 조회 (VIEW 전용) — `SHOW CREATE TABLE` 의 `Create View`.
     pub async fn get_view_info(&self, schema: &str, table: &str) -> Result<ViewInfo, AppError> {
-        let quoted_schema = identifier::quote_identifier(schema)?;
-        let quoted_table = identifier::quote_identifier(table)?;
-        let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
-
-        // SHOW 문은 prepared(binary) protocol에서 행이 비어 나온다. raw_sql은 text protocol로 실행.
-        // sql의 식별자는 quote_identifier로 백틱 인용 + 위험문자 거부됨 → AssertSqlSafe 안전 (sqlx 0.9).
-        let row = sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| AppError::MetadataQuery {
-                schema: schema.to_string(),
-                table: table.to_string(),
-                source: e,
-            })?;
-
+        let row = self.show_create(schema, table).await?;
         use sqlx::Row;
         Ok(ViewInfo {
             // charset에 따라 binary로 올 수 있어 ddl_column으로 복원 (get_table_ddl 주석 참고)
@@ -437,26 +437,10 @@ impl MySqlClient {
         })
     }
 
-    /// DDL 조회 (SQL 포맷 전용)
-    /// `SHOW CREATE TABLE {schema}.{table}`을 실행하여 CREATE TABLE DDL을 가져온다.
-    /// 스키마/테이블 이름은 백틱으로 안전하게 인용한다.
+    /// DDL 조회 (SQL 포맷 전용) — `SHOW CREATE TABLE` 의 CREATE TABLE / CREATE VIEW.
     /// FK 는 SHOW CREATE TABLE 안에 그대로 두고, SQL 출력이 `FOREIGN_KEY_CHECKS` 를 꺼서 순서 문제를 피한다.
     pub async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<TableDdl, AppError> {
-        let quoted_schema = identifier::quote_identifier(schema)?;
-        let quoted_table = identifier::quote_identifier(table)?;
-        let sql = format!("SHOW CREATE TABLE {}.{}", quoted_schema, quoted_table);
-
-        // SHOW 문은 prepared(binary) protocol에서 행이 비어 나온다. raw_sql은 text protocol로 실행.
-        // sql의 식별자는 quote_identifier로 백틱 인용 + 위험문자 거부됨 → AssertSqlSafe 안전 (sqlx 0.9).
-        let row = sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| AppError::MetadataQuery {
-                schema: schema.to_string(),
-                table: table.to_string(),
-                source: e,
-            })?;
-
+        let row = self.show_create(schema, table).await?;
         // 연결 charset에 따라 `Create Table`이 binary로 올 수 있어 ddl_column으로 복원.
         // VIEW면 `Create Table` 컬럼이 없고 `Create View`가 온다 — 그쪽으로 폴백.
         ddl_column(&row, "Create Table")
@@ -470,6 +454,37 @@ impl MySqlClient {
                 table: table.to_string(),
                 source: sqlx::Error::RowNotFound,
             })
+    }
+
+    /// `SHOW CREATE TABLE schema.table` 결과 행. 이름은 백틱 인용 + 위험 문자 거부.
+    ///
+    /// 뷰는 현재 데이터베이스가 다르면 뷰 이름과 참조가 `` `db`.`t` `` 로 한정돼, 다른 이름의
+    /// DB 에 실행하면 원래 DB 를 가리킨다. mysqldump 처럼 같은 연결에서 먼저 `USE` 한다.
+    async fn show_create(
+        &self,
+        schema: &str,
+        table: &str,
+    ) -> Result<sqlx::mysql::MySqlRow, AppError> {
+        let quoted_schema = identifier::quote_identifier(schema)?;
+        let quoted_table = identifier::quote_identifier(table)?;
+        let query_error = |e| AppError::MetadataQuery {
+            schema: schema.to_string(),
+            table: table.to_string(),
+            source: e,
+        };
+        let mut conn = self.pool.acquire().await.map_err(query_error)?;
+        // SHOW·USE 는 prepared(binary) protocol 에서 행이 비거나 거부되므로 raw_sql(text protocol).
+        // 식별자는 quote_identifier 로 인용·검증됨 → AssertSqlSafe 안전 (sqlx 0.9).
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("USE {quoted_schema}")))
+            .execute(&mut *conn)
+            .await
+            .map_err(query_error)?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "SHOW CREATE TABLE {quoted_schema}.{quoted_table}"
+        )))
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(query_error)
     }
 }
 
@@ -491,9 +506,10 @@ fn ddl_column(row: &sqlx::mysql::MySqlRow, name: &str) -> Option<String> {
 ///
 /// MySQL 은 문자열 기본값을 따옴표 없이 돌려줘서 `DEFAULT 'NULL'`(문자열) 과
 /// `DEFAULT NULL`, 따옴표 두 개짜리 문자열과 `DEFAULT ''` 를 구분할 수 없다.
-/// 문자열·날짜 타입의 리터럴만 `'...'` 로 감싸고(`\` → `\\`, `'` → `''`),
+/// 문자열·날짜 타입의 리터럴만 `'...'` 로 감싸고([`quote_string_literal`]),
 /// 숫자·bit 는 그대로 둔다. 표현식 기본값(`DEFAULT_GENERATED`)은 information_schema 가
 /// 한 겹 더 씌운 백슬래시 이스케이프(`\'`, `\\`)를 벗기고, 5.7 의 `CURRENT_TIMESTAMP` 는 그대로.
+/// MySQL 8 이 16진 리터럴(`0x6162`)로 돌려주는 binary·varbinary 기본값도 그대로 둔다.
 pub(crate) fn quote_literal_default(
     default: Option<String>,
     column_type: &str,
@@ -525,16 +541,40 @@ pub(crate) fn quote_literal_default(
     if extra.is_some_and(|e| e.contains("DEFAULT_GENERATED")) {
         return Some(unescape_one_level(&value));
     }
+    // ponytail: 5.7 은 binary 기본값을 원래 바이트로 돌려줘, 문자열 '0x12' 기본값이면 16진으로 오인 — 드묾.
+    let is_hex = value
+        .strip_prefix("0x")
+        .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()));
+    if matches!(base_type.as_str(), "binary" | "varbinary") && is_hex {
+        return Some(value);
+    }
     let is_current_timestamp =
         is_temporal && value.to_ascii_uppercase().starts_with("CURRENT_TIMESTAMP");
     if (is_string || is_temporal) && !is_current_timestamp {
-        Some(format!(
-            "'{}'",
-            value.replace('\\', "\\\\").replace('\'', "''")
-        ))
+        Some(quote_string_literal(&value))
     } else {
         Some(value)
     }
+}
+
+/// `'...'` 문자열 리터럴 — SHOW CREATE TABLE 처럼 `\`·개행·CR·NUL·Ctrl-Z 는 백슬래시로 이스케이프
+/// (`'` 는 `''`). 정의서 한 칸에 실제 개행이 들어가지 않고, 그대로 SQL 로 쓸 수 있다.
+fn quote_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("''"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            '\u{1a}' => out.push_str("\\Z"),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// 백슬래시 이스케이프를 한 겹 벗긴다: `\x` → `x` (`\'` → `'`, `\\` → `\`).
@@ -640,6 +680,21 @@ mod tests {
         assert_eq!(
             q(r"plain\x", "varchar(10)", None).as_deref(),
             Some(r"'plain\\x'")
+        );
+        // 실제 개행·CR·NUL·Ctrl-Z 는 SHOW CREATE TABLE 처럼 이스케이프 (탭은 그대로)
+        assert_eq!(
+            q("a\nb\r\0\u{1a}\tc", "varchar(10)", None).as_deref(),
+            Some("'a\\nb\\r\\0\\Z\tc'")
+        );
+        // MySQL 8 의 binary·varbinary 기본값은 16진 리터럴 그대로 (MySQL 8.4 실측 값)
+        assert_eq!(q("0x6162", "binary(2)", None).as_deref(), Some("0x6162"));
+        assert_eq!(
+            q("0x610A62", "varbinary(4)", None).as_deref(),
+            Some("0x610A62")
+        );
+        assert_eq!(
+            q("0x6162", "varchar(10)", None).as_deref(),
+            Some("'0x6162'")
         );
         // 기본값 없음은 그대로 None
         assert_eq!(quote_literal_default(None, "varchar(10)", None), None);
