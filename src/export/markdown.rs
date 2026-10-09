@@ -1,8 +1,9 @@
 use std::borrow::Cow;
 use std::cmp::max;
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
+use std::path::Path;
 
 use crate::{
     error::AppError,
@@ -35,15 +36,7 @@ impl Exporter for MarkdownExporter {
     fn setup(&mut self, catalog: &SchemaCatalog, config: &RunConfig) -> Result<(), AppError> {
         // 스키마별 .md 파일 생성 (기존 파일 덮어쓰기)
         let source = super::source_label(config);
-        for (schema, filename) in super::schema_filenames(catalog.keys(), &source, "md") {
-            let file = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&filename)
-                .map_err(|source| AppError::FileWrite { source })?;
-            self.files.insert(schema.clone(), file);
-        }
+        self.files = super::create_schema_files(Path::new(""), catalog.keys(), &source, "md")?;
         Ok(())
     }
 
@@ -137,16 +130,16 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                         file,
                         "- [{}]{}({})",
                         idx.kind_label(),
-                        idx.index_name,
-                        idx.index_columns
+                        cell(&idx.index_name),
+                        cell(&idx.index_columns)
                     )?;
                     // 커버링 인덱스(PostgreSQL): INCLUDE 컬럼
                     if let Some(include) = &idx.include_columns {
-                        write!(file, " INCLUDE ({})", include)?;
+                        write!(file, " INCLUDE ({})", cell(include))?;
                     }
                     // 파셜 인덱스(partial index): predicate가 존재하면 " WHERE <predicate>" 추가
                     if let Some(pred) = &idx.predicate {
-                        write!(file, " WHERE {}", pred)?;
+                        write!(file, " WHERE {}", cell(pred))?;
                     }
                     writeln!(file)?;
                 }
@@ -160,9 +153,9 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                     writeln!(
                         file,
                         "- {} FOREIGN KEY ({}) Reference {} ON DELETE {} ON UPDATE {}",
-                        con.constraint_name,
-                        con.constraint_column,
-                        con.reference,
+                        cell(&con.constraint_name),
+                        cell(&con.constraint_column),
+                        cell(&con.reference),
                         con.delete_action,
                         con.update_action,
                     )?;
@@ -177,7 +170,9 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
                 writeln!(
                     file,
                     "|{}|{}|{}|",
-                    t.general.table_type, view.charset, view.collate
+                    cell(&t.general.table_type),
+                    cell(&view.charset),
+                    cell(&view.collate)
                 )?;
             } else {
                 writeln!(file, "|{}||  |", t.general.table_type)?;
@@ -197,19 +192,33 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
     Ok(())
 }
 
-/// Markdown 표 셀(과 목차 한 줄)을 깨뜨리는 문자를 이스케이프한다.
+/// Markdown 표 셀(과 목록 한 줄)을 깨뜨리거나 서식으로 해석되는 문자를 이스케이프한다.
 ///
-/// 코멘트의 줄바꿈·`|`, PostgreSQL 기본값의 `||` 연산자, enum 값의 `|` 가 그대로
-/// 들어가면 행이 갈라지거나 칸이 밀린다. `|` → `\|`, 줄바꿈 → `<br>`.
+/// 코멘트의 줄바꿈·`|`, PostgreSQL 기본값의 `||` 연산자는 행을 가르고, MySQL 기본값의
+/// `\` 이스케이프(`'a\nb'`)·`<태그>`·`` ` ``·`*` 는 서식으로 해석돼 다른 값으로 보인다.
+/// `\` `|` `` ` `` `*` `<` 앞에는 백슬래시를 붙이고, 줄바꿈 → `<br>`.
 fn cell(s: &str) -> Cow<'_, str> {
-    if !s.contains(['|', '\n', '\r']) {
+    if !s.contains(['\\', '|', '`', '*', '<', '\n', '\r']) {
         return Cow::Borrowed(s);
     }
-    Cow::Owned(
-        s.replace("\r\n", "<br>")
-            .replace(['\n', '\r'], "<br>")
-            .replace('|', "\\|"),
-    )
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' | '|' | '`' | '*' | '<' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\r' | '\n' => {
+                if c == '\r' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push_str("<br>");
+            }
+            c => out.push(c),
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// VIEW의 SQL 본문을 언어 태그가 붙은 fenced code block으로 기록한다.
@@ -271,6 +280,10 @@ mod tests {
             cell("첫 줄\r\n둘째\n셋째\r끝"),
             "첫 줄<br>둘째<br>셋째<br>끝"
         );
+        // MySQL 기본값의 백슬래시 이스케이프·HTML 태그·코드/강조 표시는 글자 그대로 보이게
+        assert_eq!(cell(r"'a\nb'"), r"'a\\nb'");
+        assert_eq!(cell("<b>x</b>"), r"\<b>x\</b>");
+        assert_eq!(cell("`a` * 2"), r"\`a\` \* 2");
     }
 
     #[test]

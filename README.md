@@ -118,7 +118,7 @@ RUST_LOG=debug ./td-export
 
 ## 출력 파일 형식
 
-파일명의 `{endpoint}` 자리에는 같은 호스트의 다른 인스턴스·DB 출력이 서로 덮어쓰지 않도록, 포트가 기본값(3306/5432)이 아니면 `_{port}`, PostgreSQL이면 `_{database}`가 붙습니다 (예: `public(db.local_55432_mydb).md`). 파일명에 쓸 수 없는 문자(`/ \ : * ? " < > |`)는 `_`로 바뀝니다.
+파일명의 `{endpoint}` 자리에는 같은 호스트의 다른 인스턴스·DB 출력이 서로 덮어쓰지 않도록, 포트가 기본값(3306/5432)이 아니면 `_{port}`, PostgreSQL이면 `@{database}`가 붙습니다 (예: `public(db.local_55432@mydb).md`). 파일명에 쓸 수 없는 문자(`/ \ : * ? " < > |`)는 `_`로 바뀌고, Windows 장치 이름(`NUL`, `CON.x` 등)은 앞에 `_`가 붙으며, 255바이트를 넘는 이름은 잘라서 해시를 붙입니다.
 
 ### Excel (`{endpoint}.xlsx`)
 
