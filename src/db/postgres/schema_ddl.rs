@@ -320,12 +320,11 @@ struct DomainDef<'a> {
     checks: &'a [(String, String)],
 }
 
+/// `CREATE DOMAIN ..;` — 아직 검증하지 않은(NOT VALID) CHECK 는 CREATE DOMAIN 에 쓸 수 없어
+/// (구문 오류) 바로 뒤의 `ALTER DOMAIN .. ADD CONSTRAINT .. NOT VALID;` 로 그 상태 그대로 추가한다.
 fn build_domain_ddl(schema: &str, name: &str, domain: &DomainDef) -> Result<String, AppError> {
-    let mut ddl = format!(
-        "CREATE DOMAIN {} AS {}",
-        qualified(schema, name)?,
-        domain.base_type
-    );
+    let target = qualified(schema, name)?;
+    let mut ddl = format!("CREATE DOMAIN {target} AS {}", domain.base_type);
     if let Some(collation) = domain.collation {
         ddl.push_str(&format!(" COLLATE {collation}"));
     }
@@ -335,13 +334,23 @@ fn build_domain_ddl(schema: &str, name: &str, domain: &DomainDef) -> Result<Stri
     if domain.not_null {
         ddl.push_str(" NOT NULL");
     }
+    let mut not_valid = Vec::new();
     for (check_name, definition) in domain.checks {
-        ddl.push_str(&format!(
-            " CONSTRAINT {} {definition}",
+        let constraint = format!(
+            "CONSTRAINT {} {definition}",
             quote_pg_identifier(check_name)?
-        ));
+        );
+        if definition.ends_with(" NOT VALID") {
+            not_valid.push(format!("ALTER DOMAIN {target} ADD {constraint};"));
+        } else {
+            ddl.push_str(&format!(" {constraint}"));
+        }
     }
     ddl.push(';');
+    for statement in not_valid {
+        ddl.push('\n');
+        ddl.push_str(&statement);
+    }
     Ok(ddl)
 }
 
@@ -457,6 +466,26 @@ mod tests {
         assert_eq!(
             build_domain_ddl("a", "code", &collated).unwrap(),
             r#"CREATE DOMAIN "a"."code" AS text COLLATE pg_catalog."C";"#
+        );
+        // NOT VALID CHECK 는 CREATE DOMAIN 뒤 ALTER DOMAIN 으로 (CREATE DOMAIN 에 쓰면 구문 오류)
+        let not_valid = [
+            ("pos".to_string(), "CHECK ((VALUE > 0))".to_string()),
+            (
+                "small".to_string(),
+                "CHECK ((VALUE < 100)) NOT VALID".to_string(),
+            ),
+        ];
+        let partly_valid = DomainDef {
+            base_type: "integer",
+            collation: None,
+            default_value: None,
+            not_null: false,
+            checks: &not_valid,
+        };
+        assert_eq!(
+            build_domain_ddl("a", "n", &partly_valid).unwrap(),
+            "CREATE DOMAIN \"a\".\"n\" AS integer CONSTRAINT \"pos\" CHECK ((VALUE > 0));\n\
+             ALTER DOMAIN \"a\".\"n\" ADD CONSTRAINT \"small\" CHECK ((VALUE < 100)) NOT VALID;"
         );
         assert_eq!(
             build_enum_ddl("a", "empty", &[]).unwrap(),
