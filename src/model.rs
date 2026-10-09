@@ -197,7 +197,7 @@ pub struct TableDef {
     pub ddl: Option<String>,
     /// 모든 테이블의 CREATE 뒤에 실행할 문장 (PostgreSQL FK 의 `ALTER TABLE ... ADD CONSTRAINT`)
     pub ddl_after: Vec<String>,
-    /// 다른 스키마를 참조하는 PostgreSQL FK — 스키마 파일이 아닌 별도 파일에 쓴다
+    /// 다른 스키마를 참조하는 PostgreSQL FK·기본값 — 스키마 파일이 아닌 `{schema}(..).cross-schema-fk.sql` 에 쓴다
     pub ddl_cross_schema: Vec<String>,
 }
 
@@ -208,7 +208,7 @@ pub struct TableDdl {
     pub create: String,
     /// 모든 테이블을 만든 뒤 실행할 문장 (참조 대상이 먼저 있어야 하는 FK 등)
     pub after: Vec<String>,
-    /// 다른 스키마를 참조하는 FK — 모든 스키마 파일을 실행한 뒤 실행할 별도 파일에 모은다
+    /// 다른 스키마를 참조하는 FK·기본값 — 모든 스키마 파일을 실행한 뒤 실행할 스키마별 파일에 모은다
     pub cross_schema: Vec<String>,
 }
 

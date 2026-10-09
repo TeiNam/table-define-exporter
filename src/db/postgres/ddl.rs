@@ -434,7 +434,8 @@ pub(super) async fn fetch_table_ddl(
 
     // 1. 컬럼 정보 조회 (ordinal_position 순). 타입 기본값과 다른 COLLATE 는 타입 뒤에 붙이고,
     //    NOT NULL 은 information_schema(도메인의 NOT NULL 까지 NO)가 아닌 컬럼 자체 속성으로 본다.
-    //    default_after: 다른 테이블의 identity 시퀀스를 쓰는 기본값 — 그 테이블이 먼저 있어야 한다.
+    //    default_after_schema: 다른 테이블의 identity 시퀀스를 쓰는 기본값이면 그 시퀀스의 스키마 —
+    //    그 테이블이 먼저 있어야 하므로 모든 테이블 뒤(다른 스키마면 cross-schema 파일)로 미룬다.
     let col_rows = sqlx::query(
         "SELECT \
              c.column_name, \
@@ -444,8 +445,8 @@ pub(super) async fn fetch_table_ddl(
                     ELSE '' END AS data_type, \
              NOT a.attnotnull AS is_nullable, \
              c.column_default, \
-             EXISTS ( \
-                 SELECT 1 FROM pg_catalog.pg_attrdef ad \
+             ( \
+                 SELECT seqn.nspname::text FROM pg_catalog.pg_attrdef ad \
                  JOIN pg_catalog.pg_depend d \
                    ON d.classid = 'pg_catalog.pg_attrdef'::regclass AND d.objid = ad.oid \
                   AND d.refclassid = 'pg_catalog.pg_class'::regclass \
@@ -453,8 +454,10 @@ pub(super) async fn fetch_table_ddl(
                    ON i.classid = 'pg_catalog.pg_class'::regclass AND i.objid = d.refobjid \
                   AND i.deptype = 'i' AND i.refobjid <> a.attrelid \
                  JOIN pg_catalog.pg_class seq ON seq.oid = d.refobjid AND seq.relkind = 'S' \
+                 JOIN pg_catalog.pg_namespace seqn ON seqn.oid = seq.relnamespace \
                  WHERE ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
-             ) AS default_after, \
+                 LIMIT 1 \
+             ) AS default_after_schema, \
              a.attgenerated::text AS attgenerated, \
              c.generation_expression, \
              a.attidentity::text AS attidentity, \
@@ -505,6 +508,7 @@ pub(super) async fn fetch_table_ddl(
     );
     let mut ddl_columns: Vec<PgDdlColumn> = Vec::new();
     let mut deferred_defaults: Vec<String> = Vec::new();
+    let mut cross_schema_defaults: Vec<String> = Vec::new();
     for row in &col_rows {
         // try_get 실패 시 경고 로그 + 기본값 반환 (Requirements 5.2)
         let column_name: String = try_get_or_warn(row, "column_name", schema, table);
@@ -512,16 +516,22 @@ pub(super) async fn fetch_table_ddl(
         let data_type: String = try_get_or_warn(row, "data_type", schema, table);
         let is_nullable: bool = try_get_or_warn(row, "is_nullable", schema, table);
         let column_default: Option<String> = try_get_or_warn(row, "column_default", schema, table);
-        let default_after: bool = try_get_or_warn(row, "default_after", schema, table);
-        let column_default = match column_default {
-            Some(default) if default_after => {
-                deferred_defaults.push(format!(
+        let default_after: Option<String> =
+            try_get_or_warn(row, "default_after_schema", schema, table);
+        let column_default = match (column_default, default_after) {
+            (Some(default), Some(seq_schema)) => {
+                let statement = format!(
                     "ALTER TABLE {quoted_table} ALTER COLUMN {} SET DEFAULT {default};",
                     quote_pg_identifier(&column_name)?
-                ));
+                );
+                if seq_schema == schema {
+                    deferred_defaults.push(statement);
+                } else {
+                    cross_schema_defaults.push(statement);
+                }
                 None
             }
-            other => other,
+            (default, _) => default,
         };
         let attgenerated: String = try_get_or_warn(row, "attgenerated", schema, table);
         let generation_expression: Option<String> =
@@ -575,8 +585,8 @@ pub(super) async fn fetch_table_ddl(
         let column_options = super::foreign::fetch_column_options_ddl(pool, schema, table).await?;
         append_statements(&mut create, &column_options);
     }
-    // 다른 스키마를 참조하는 FK 는 별도 파일로 — 스키마끼리 서로 참조하면 어느 스키마 파일을
-    // 먼저 실행해도 참조 대상이 없어 실패한다
+    // 다른 스키마를 참조하는 FK(와 위의 기본값)는 별도 파일로 — 스키마끼리 서로 참조하면 어느
+    // 스키마 파일을 먼저 실행해도 참조 대상이 없어 실패한다
     let (cross_fks, local): (Vec<PgDdlConstraint>, Vec<PgDdlConstraint>) =
         ddl_constraints.iter().cloned().partition(|c| {
             matches!(&c.constraint_type, PgConstraintType::ForeignKey { ref_schema, .. }
@@ -584,7 +594,8 @@ pub(super) async fn fetch_table_ddl(
         });
     let mut after = deferred_defaults;
     after.extend(build_pg_fk_ddl(schema, table, &local)?);
-    let mut cross_schema = build_pg_fk_ddl(schema, table, &cross_fks)?;
+    let mut cross_schema = cross_schema_defaults;
+    cross_schema.extend(build_pg_fk_ddl(schema, table, &cross_fks)?);
     if partition_key.is_some() {
         let partitions = super::partition::fetch_partitions_ddl(pool, schema, table).await?;
         append_statements(&mut create, &partitions.create);

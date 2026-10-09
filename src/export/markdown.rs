@@ -14,8 +14,8 @@ use super::Exporter;
 
 /// Markdown 출력 담당 Exporter
 pub struct MarkdownExporter {
-    /// 스키마명 → 파일 핸들 맵
-    files: HashMap<String, File>,
+    /// 스키마명 → (파일명, 파일 핸들)
+    files: HashMap<String, (String, File)>,
 }
 
 impl MarkdownExporter {
@@ -42,7 +42,7 @@ impl Exporter for MarkdownExporter {
 
     fn write_tables(&mut self, schema: &str, tables: &[TableDef]) -> Result<(), AppError> {
         let file = match self.files.get_mut(schema) {
-            Some(f) => f,
+            Some((_, f)) => f,
             None => return Ok(()),
         };
 

@@ -63,12 +63,8 @@ pub fn apply_sql_terminator(ddl: &str, db_type: DbType) -> String {
 
 /// SQL 출력 담당 Exporter
 pub struct SqlExporter {
-    /// 스키마명 → 파일 핸들 맵
-    files: HashMap<String, File>,
-    /// 접속 대상 표기 (파일명에 사용) — [`super::source_label`]
-    source: String,
-    /// 다른 스키마를 참조하는 FK — 모든 스키마를 쓴 뒤 별도 파일로 낸다
-    cross_schema: Vec<String>,
+    /// 스키마명 → (파일명, 파일 핸들)
+    files: HashMap<String, (String, File)>,
     /// DB 종류 (식별자 인용 규칙 + Terminator 선택에 사용) — Req 14.4
     db_type: DbType,
     /// 스키마명 → 테이블보다 먼저 쓸 문장 (PostgreSQL 사용자 타입·시퀀스)
@@ -79,8 +75,6 @@ impl SqlExporter {
     pub fn new() -> Self {
         Self {
             files: HashMap::new(),
-            source: String::new(),
-            cross_schema: Vec::new(),
             // 초기값은 MySQL. 실제 값은 `setup`에서 `config.db_type`으로 덮어쓴다.
             db_type: DbType::MySql,
             preambles: HashMap::new(),
@@ -100,27 +94,25 @@ impl Exporter for SqlExporter {
         self.db_type = config.db_type;
 
         // 스키마별 .sql 파일 생성 (기존 파일 덮어쓰기)
-        self.source = super::source_label(config);
-        self.files =
-            super::create_schema_files(Path::new(""), catalog.keys(), &self.source, "sql")?;
+        let source = super::source_label(config);
+        self.files = super::create_schema_files(Path::new(""), catalog.keys(), &source, "sql")?;
         Ok(())
     }
 
     fn write_tables(&mut self, schema: &str, tables: &[TableDef]) -> Result<(), AppError> {
         let preamble = self.preambles.remove(schema).unwrap_or_default();
-        let file = match self.files.get_mut(schema) {
-            Some(f) => f,
+        let (name, file) = match self.files.get_mut(schema) {
+            Some(entry) => entry,
             None => return Ok(()),
         };
 
         write_sql(file, schema, &preamble, tables, self.db_type)
             .map_err(|source| AppError::FileWrite { source })?;
-        self.cross_schema.extend(
-            tables
-                .iter()
-                .flat_map(|t| t.ddl_cross_schema.iter().cloned()),
-        );
-        Ok(())
+        let cross_schema: Vec<&str> = tables
+            .iter()
+            .flat_map(|t| t.ddl_cross_schema.iter().map(String::as_str))
+            .collect();
+        write_cross_schema_file(&super::cross_schema_filename(name), schema, &cross_schema)
     }
 
     fn set_schema_preamble(&mut self, schema: &str, statements: Vec<String>) {
@@ -129,27 +121,41 @@ impl Exporter for SqlExporter {
 
     fn finish(&mut self) -> Result<(), AppError> {
         self.files.clear();
-        if self.cross_schema.is_empty() {
-            return Ok(());
-        }
-        let filename = super::cross_schema_filename(&self.source);
-        let mut file = File::create(&filename).map_err(|source| AppError::FileWrite { source })?;
-        write_cross_schema_sql(&mut file, &self.cross_schema)
-            .map_err(|source| AppError::FileWrite { source })?;
-        tracing::info!(
-            "다른 스키마를 참조하는 FK {}건 → {filename} (모든 스키마 파일 실행 후 실행)",
-            self.cross_schema.len()
-        );
         Ok(())
     }
 }
 
-/// 다른 스키마를 참조하는 FK 파일 — 스키마끼리 서로 참조해도 스키마 파일을 모두 실행한 뒤
-/// 이 파일을 실행하면 된다 (PostgreSQL 전용).
-fn write_cross_schema_sql(file: &mut impl Write, statements: &[String]) -> std::io::Result<()> {
+/// 스키마의 다른 스키마 참조 FK·기본값 파일 (PostgreSQL). 스키마끼리 서로 참조해도 스키마 파일을
+/// 모두 실행한 뒤 이 파일들을 실행하면 된다. 이번에 그런 문장이 없으면 이전 실행이 남긴 파일을
+/// 지운다 — 다시 내보낸 스키마의 현재 상태만 남도록 (스키마 파일을 덮어쓰는 것과 같은 규칙).
+fn write_cross_schema_file(path: &str, schema: &str, statements: &[&str]) -> Result<(), AppError> {
+    if statements.is_empty() {
+        return match std::fs::remove_file(path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(AppError::FileWrite { source: e })
+            }
+            _ => Ok(()),
+        };
+    }
+    let mut file = File::create(path).map_err(|source| AppError::FileWrite { source })?;
+    write_cross_schema_sql(&mut file, schema, statements)
+        .map_err(|source| AppError::FileWrite { source })?;
+    tracing::info!(
+        "{schema}: 다른 스키마를 참조하는 문장 {}건 → {path} (모든 스키마 파일 실행 후 실행)",
+        statements.len()
+    );
+    Ok(())
+}
+
+fn write_cross_schema_sql(
+    file: &mut impl Write,
+    schema: &str,
+    statements: &[&str],
+) -> std::io::Result<()> {
     writeln!(
         file,
-        "/* Cross-schema Foreign Keys — 모든 스키마 파일을 실행한 뒤 실행 */"
+        "/* Cross-schema : {} — 모든 스키마 파일을 실행한 뒤 실행 */",
+        comment_text(schema)
     )?;
     writeln!(file, "SET client_encoding = 'UTF8';")?;
     writeln!(file, "SET standard_conforming_strings = on;")?;
@@ -433,11 +439,25 @@ mod tests {
     }
 
     #[test]
+    fn cross_schema_file_is_removed_when_schema_has_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a(h).cross-schema-fk.sql");
+        let path = path.to_str().unwrap();
+        write_cross_schema_file(path, "a", &["ALTER TABLE a.t ADD FK;"]).unwrap();
+        assert!(std::fs::read_to_string(path).unwrap().contains("ADD FK"));
+        // 다시 내보냈을 때 다른 스키마 참조가 없으면 이전 실행의 파일을 지운다
+        write_cross_schema_file(path, "a", &[]).unwrap();
+        assert!(!std::path::Path::new(path).exists());
+        // 없는 파일을 지우려는 것은 오류가 아니다
+        write_cross_schema_file(path, "a", &[]).unwrap();
+    }
+
+    #[test]
     fn cross_schema_fk_file_has_header_and_statements() {
         let mut out = Vec::new();
-        write_cross_schema_sql(&mut out, &["ALTER TABLE a.t ADD FK;".to_string()]).unwrap();
+        write_cross_schema_sql(&mut out, "a", &["ALTER TABLE a.t ADD FK;"]).unwrap();
         let out = String::from_utf8(out).unwrap();
-        assert!(out.starts_with("/* Cross-schema Foreign Keys"), "{out}");
+        assert!(out.starts_with("/* Cross-schema : a — "), "{out}");
         assert!(out.contains("SET standard_conforming_strings = on;\n\nALTER TABLE a.t ADD FK;\n"));
     }
 
