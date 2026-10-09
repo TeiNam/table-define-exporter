@@ -181,8 +181,8 @@ fn filenames_avoid_device_names_and_length_limit() {
     assert_eq!(schema_filename("NUL", "h", "md"), "NUL(h).md");
     assert_eq!(workbook_filename("console"), "console.xlsx");
     assert_eq!(
-        cross_schema_filename("db.local_55432@app"),
-        "db.local_55432@app.cross-schema-fk.sql"
+        cross_schema_filename("a(db.local_55432@app).sql"),
+        "a(db.local_55432@app).cross-schema-fk.sql"
     );
 
     let long_a = "가".repeat(100);

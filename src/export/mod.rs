@@ -68,10 +68,12 @@ pub fn workbook_filename(source: &str) -> String {
     fit_filename(&sanitize_filename_part(source), "xlsx")
 }
 
-/// 다른 스키마를 참조하는 PostgreSQL FK 를 모은 파일명: `{source}.cross-schema-fk.sql`
-/// (스키마 파일 `{schema}({source}).sql` 과 겹치지 않는다)
-pub fn cross_schema_filename(source: &str) -> String {
-    fit_filename(&sanitize_filename_part(source), "cross-schema-fk.sql")
+/// 스키마 파일(`{schema}({source}).sql`)의 다른 스키마 참조 FK 파일명:
+/// `{schema}({source}).cross-schema-fk.sql` — 스키마별로 나눠, 일부 스키마만 다시 내보내도 다른
+/// 스키마의 FK 파일은 그대로 남는다.
+pub fn cross_schema_filename(schema_file: &str) -> String {
+    let stem = schema_file.strip_suffix(".sql").unwrap_or(schema_file);
+    fit_filename(&format!("{stem}.cross-schema-fk"), "sql")
 }
 
 /// 파일 이름 한 개의 최대 길이 (대부분의 파일 시스템이 255바이트)
@@ -127,7 +129,7 @@ pub fn source_label(config: &RunConfig) -> String {
     label
 }
 
-/// 스키마별 출력 파일을 `dir` 에 만든다 (기존 파일은 덮어씀).
+/// 스키마별 출력 파일을 `dir` 에 만든다 (기존 파일은 덮어씀). 스키마명 → (파일명, 파일).
 ///
 /// 이름이 달라도 파일 시스템이 같은 파일로 여기는 경우(macOS 의 유니코드 정규화 무시 등)
 /// 두 스키마가 한 파일에 섞이지 않도록, 이번 실행에서 이미 연 파일과 같은 파일이면(Unix: 장치·inode)
@@ -137,7 +139,7 @@ pub(crate) fn create_schema_files<'a>(
     schemas: impl IntoIterator<Item = &'a String>,
     source: &str,
     ext: &str,
-) -> Result<HashMap<String, File>, AppError> {
+) -> Result<HashMap<String, (String, File)>, AppError> {
     let open = |name: &str| {
         OpenOptions::new()
             .write(true)
@@ -160,7 +162,7 @@ pub(crate) fn create_schema_files<'a>(
             file = open(&name)?;
             n += 1;
         }
-        files.insert(schema.clone(), file);
+        files.insert(schema.clone(), (name, file));
     }
     Ok(files)
 }
@@ -226,8 +228,9 @@ mod tests {
         std::fs::hard_link(dir.path().join("a(h).md"), dir.path().join("b(h).md")).unwrap();
         let schemas = vec!["a".to_string(), "b".to_string()];
         let mut files = create_schema_files(dir.path(), &schemas, "h", "md").unwrap();
-        files.get_mut("a").unwrap().write_all(b"A").unwrap();
-        files.get_mut("b").unwrap().write_all(b"B").unwrap();
+        files.get_mut("a").unwrap().1.write_all(b"A").unwrap();
+        files.get_mut("b").unwrap().1.write_all(b"B").unwrap();
+        assert_eq!(files["b"].0, "b~2(h).md");
         drop(files);
         let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).unwrap();
         assert_eq!(read("a(h).md"), "A");
