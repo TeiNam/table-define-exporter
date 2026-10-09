@@ -577,14 +577,26 @@ fn quote_string_literal(value: &str) -> String {
     out
 }
 
-/// 백슬래시 이스케이프를 한 겹 벗긴다: `\x` → `x` (`\'` → `'`, `\\` → `\`).
+/// 백슬래시 이스케이프를 한 겹 벗긴다: `\'` → `'`, `\\` → `\`, 제어 문자 이스케이프(`\n` `\r`
+/// `\t` `\0` `\Z` `\b`)는 그 문자로. information_schema 는 식별자 속 개행을 `\n` 으로 내보내므로
+/// 백슬래시만 떼면 `` `a<개행>b` `` 가 `` `anb` `` 가 된다.
 fn unescape_one_level(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
-        match c {
-            '\\' => out.push(chars.next().unwrap_or('\\')),
-            c => out.push(c),
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('0') => out.push('\0'),
+            Some('Z') => out.push('\u{1a}'),
+            Some('b') => out.push('\u{8}'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
         }
     }
     out
@@ -675,6 +687,11 @@ mod tests {
             )
             .as_deref(),
             Some(r"concat(_utf8mb4'it\'s',_utf8mb4'\\',_utf8mb4'x')")
+        );
+        // 식별자 속 개행: information_schema 는 `\n` 한 겹으로 준다 (MySQL 8.4 실측 값)
+        assert_eq!(
+            q("(`a\\nb` + `t\tc`)", "int", Some("DEFAULT_GENERATED")).as_deref(),
+            Some("(`a\nb` + `t\tc`)")
         );
         // 문자열 리터럴의 백슬래시도 SHOW CREATE TABLE 처럼 \\ 로
         assert_eq!(
