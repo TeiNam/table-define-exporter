@@ -139,6 +139,7 @@ RUST_LOG=debug ./td-export
 - 테이블별 섹션: 일반 정보, 컬럼 표, 인덱스(파셜 인덱스 `WHERE` 절 포함), 제약 조건
 - 인덱스 종류는 `Normal` / `Unique` / `Fulltext` / `Spatial`로 표시하고, 컬럼에는 내림차순(`DESC`), prefix 길이(`col(10)`), 함수식(`(lower(name))`), PostgreSQL의 `NULLS`·opclass를 그대로 남깁니다 (Excel 동일)
 - 컬럼 기본값: `NULL`(기본값이 NULL), 빈칸(기본값 없음 — NOT NULL·generated 컬럼), 문자열·날짜 리터럴은 `'...'`로 감싸 문자열 `'NULL'`·빈 문자열 `''`과 구분합니다 (Excel 동일)
+- 셀 값이 표를 깨거나 서식으로 바뀌지 않게, 줄바꿈은 `<br>`로 바꾸고 `|` `\` `` ` `` `*` `<`와 링크·이미지가 되는 `](`의 `(`에는 백슬래시를 붙입니다
 - 뷰(VIEW): 뷰 정보 + View Create SQL 코드 블록 (언어 태그 `sql`)
 
 ### SQL (`{schema}({endpoint}).sql`)
@@ -147,13 +148,18 @@ RUST_LOG=debug ./td-export
 - 데이터베이스 헤더 주석(`/* Database : ... */`) 포함
 - 테이블별: 테이블 주석(`/* Table : ... */`) + 원본 CREATE DDL (정확히 하나의 `;`로 종결)
 - `DROP TABLE IF EXISTS` 구문은 출력하지 않습니다 (CREATE DDL만 출력). 단, 위험 식별자를 포함한 테이블은 안전을 위해 출력에서 스킵합니다.
-- 파일을 그대로 실행할 수 있도록 FK 순서를 처리합니다 — MySQL은 mysqldump처럼 파일 앞뒤에서 `FOREIGN_KEY_CHECKS`를 잠시 끄고 원래 값으로 되돌리고, PostgreSQL은 pg_dump처럼 FK를 `CREATE TABLE` 밖으로 빼 파일 끝 `/* Foreign Keys */`에 `ALTER TABLE ... ADD CONSTRAINT`로 모읍니다 (검증하지 않은 `NOT VALID` 제약과, 다른 테이블의 identity 시퀀스를 쓰는 기본값도 여기서 추가). PostgreSQL에서 다른 스키마를 참조하는 FK(와 다른 스키마의 identity 시퀀스를 쓰는 기본값)는 스키마끼리 서로 참조해도 실행되도록 스키마별 파일 `{schema}({endpoint}).cross-schema-fk.sql`에 따로 모읍니다. 스키마 파일을 모두 실행한 뒤 이 파일들을 실행하세요 — 이름순으로는 이 파일이 스키마 파일보다 앞에 오므로 `*.sql`을 차례로 실행하면 안 됩니다. 다시 내보낸 스키마에 그런 문장이 없으면 이전 실행이 남긴 파일은 지웁니다.
+- 파일을 그대로 실행할 수 있도록 FK 순서를 처리합니다 — MySQL은 mysqldump처럼 파일 앞뒤에서 `FOREIGN_KEY_CHECKS`를 잠시 끄고(`SQL_MODE`도 `NO_AUTO_VALUE_ON_ZERO`로 바꿔 strict 모드에서도 `DEFAULT '0000-00-00 00:00:00'` 같은 레거시 기본값이 실행되게 함) 원래 값으로 되돌리고, PostgreSQL은 pg_dump처럼 FK를 `CREATE TABLE` 밖으로 빼 파일 끝 `/* Foreign Keys */`에 `ALTER TABLE ... ADD CONSTRAINT`로 모읍니다 (검증하지 않은 `NOT VALID` 제약과, 다른 테이블의 identity 시퀀스를 쓰는 기본값도 여기서 추가). PostgreSQL에서 다른 스키마를 참조하는 FK(와 다른 스키마의 identity 시퀀스를 쓰는 기본값)는 스키마끼리 서로 참조해도 실행되도록 스키마별 파일 `{schema}({endpoint}).cross-schema-fk.sql`에 따로 모읍니다. 스키마 파일을 모두 실행한 뒤 이 파일들을 실행하세요 — 이름순으로는 이 파일이 스키마 파일보다 앞에 오므로 `*.sql`을 차례로 실행하면 안 됩니다. 다시 내보낸 스키마에 그런 문장이 없으면 이전 실행이 남긴 파일은 지웁니다.
   ```bash
   for f in *.sql; do case "$f" in *.cross-schema-fk.sql) ;; *) psql -v ON_ERROR_STOP=1 -f "$f" ;; esac; done
   for f in *.cross-schema-fk.sql; do psql -v ON_ERROR_STOP=1 -f "$f"; done
   ```
 - 뷰는 참조하는 테이블보다 늦게 만들어지도록 모든 테이블 뒤에 출력합니다. MySQL 뷰는 mysqldump처럼 DB 이름 없이 출력하므로, 실행할 DB를 먼저 선택(`USE`)하면 이름이 다른 DB에도 그대로 만들어집니다.
-- PostgreSQL은 테이블이 참조하는 사용자 타입(enum·도메인·복합 타입)과 시퀀스 생성문을 파일 맨 앞 `/* Types & Sequences */`에 출력하고, 코멘트는 `COMMENT ON` 문으로 붙입니다. 파티션 테이블은 부모 DDL 뒤에 `PARTITION OF`로 하위 파티션을 이어 붙이고, 머티리얼라이즈드 뷰는 `WITH NO DATA`(데이터는 `REFRESH`로 채움), 외부 테이블은 `CREATE FOREIGN TABLE ... SERVER ...`(컬럼 옵션은 `ALTER FOREIGN TABLE ... ALTER COLUMN ... OPTIONS`)로 출력합니다 (`CREATE SERVER`·USER MAPPING은 출력하지 않으므로 실행 전에 같은 이름의 서버가 있어야 합니다). 컬럼의 `COLLATE`와 PostgreSQL 18의 NOT NULL 제약 이름·`NO INHERIT`도 보존합니다.
+- MySQL 뷰의 `DEFINER=` 절도 mysqldump처럼 그대로 둡니다. 다른 계정(예: RDS 마스터 사용자)으로 실행하면 `SET_ANY_DEFINER`(8.0은 `SET_USER_ID`)나 `SUPER` 권한이 없을 때 `ERROR 1227`이 나므로, 그때는 `DEFINER=` 절을 지우고 실행하세요.
+  ```bash
+  sed -E 's/DEFINER=`[^`]*`@`[^`]*` //' 'mydb(db.local).sql' | mysql mydb
+  ```
+- 테이블·뷰 정의서 도구라 함수·프로시저·트리거·이벤트·권한과 PostgreSQL 확장(extension)은 출력하지 않습니다. `citext` 같은 확장 타입(`public.citext`처럼 스키마로 한정돼 출력)이나 btree_gist가 필요한 EXCLUDE 제약, 사용자 함수를 쓰는 기본값·CHECK가 있으면 실행 전에 그 확장·함수를 먼저 만들어 두세요.
+- PostgreSQL 파일은 pg_dump처럼 `client_encoding`·`standard_conforming_strings`·`search_path`(빈 값 — 이름이 모두 스키마로 한정돼 있음)를 고정하고 `CREATE SCHEMA IF NOT EXISTS`로 시작합니다. 테이블이 참조하는 사용자 타입(enum·도메인·복합·range 타입, 의존 순서)과 시퀀스 생성문을 파일 맨 앞 `/* Types & Sequences */`에 출력하고, 코멘트는 `COMMENT ON` 문으로 붙입니다. 파티션 테이블은 부모 DDL 뒤에 `PARTITION OF`로 하위 파티션을 이어 붙이고, 머티리얼라이즈드 뷰는 `WITH NO DATA`(데이터는 `REFRESH`로 채움), 외부 테이블은 `CREATE FOREIGN TABLE ... SERVER ...`(컬럼 옵션은 `ALTER FOREIGN TABLE ... ALTER COLUMN ... OPTIONS`)로 출력합니다 (`CREATE SERVER`·USER MAPPING은 출력하지 않으므로 실행 전에 같은 이름의 서버가 있어야 합니다). 컬럼의 `COLLATE`와 PostgreSQL 18의 NOT NULL 제약 이름·`NO INHERIT`도 보존합니다.
 
 ## 지원 데이터베이스
 
@@ -242,9 +248,15 @@ cargo audit                                             # 4. 보안 감사
 
 ### 출력 호환성
 
-원본 Go 버전의 출력 바이트 시퀀스를 최대한 유지합니다. 단, 다음은 **버그 수정**으로 인한 의도된 차이입니다:
+원본 Go 버전의 출력 바이트 시퀀스를 최대한 유지합니다. 단, 다음은 **버그 수정**으로 인한 의도된 차이입니다 (PostgreSQL 출력은 Go 버전에 없던 기능이라 비교 대상이 아닙니다):
 
 - Markdown VIEW 코드블록: 이전 한 줄 `` ```{sql}``` `` 형태 → 표준 fenced 코드블록으로 수정 (GitHub/IDE 뷰어에서 SQL 하이라이트 정상 동작)
+- 파일명: Markdown·SQL 모두 `{schema}({endpoint}).{md,sql}`로 통일하고, 기본값이 아닌 포트(`_{port}`)·PostgreSQL database(`@{database}`)를 붙여 서로 덮어쓰지 않게 했습니다. 파일명에 쓸 수 없는 문자는 `_`, 대소문자만 다르거나 같은 파일이 되는 이름은 `~2`, Windows 장치 이름은 앞에 `_`, 255바이트 초과는 잘라서 해시
+- 컬럼 기본값: `DEFAULT NULL`은 `NULL`, 문자열·날짜 리터럴은 `'...'`로 표시해 기본값 없음·빈 문자열·문자열 `'NULL'`을 구분하고, 표현식 기본값의 이중 이스케이프(`\'`)를 벗깁니다 (binary 기본값은 `0x..` 그대로)
+- Markdown 셀 이스케이프 (`|`·줄바꿈·`\`·`` ` ``·`*`·`<`·`](`) — 위 Markdown 절 참고
+- 인덱스: 종류(`[Unique]` `[Fulltext]` `[Spatial]`)를 구분하고, 컬럼에 `DESC`·prefix 길이·함수식을 남기며 긴 인덱스도 잘리지 않습니다. 다중 컬럼 FK는 한 줄로, 다른 스키마를 참조하면 `schema.table`로 표시합니다
+- Excel 시트 이름: 31자·금지 문자·대소문자만 다른 중복을 규칙에 맞게 정리
+- SQL: `DROP TABLE IF EXISTS` 없이 CREATE 만 출력하고, 헤더에서 문자셋·`FOREIGN_KEY_CHECKS`·`SQL_MODE`를 고정했다가 되돌립니다. 뷰는 테이블 뒤에 참조 순서대로, DB 이름 없이 출력하고, 조회에 실패한 테이블은 빈 `;` 대신 실패 표시 주석을 남깁니다
 
 의도적 오타(`Referance`)는 `Reference`로 수정되었습니다. 기존 Go 버전 출력물과 이 필드 라벨이 다릅니다.
 

@@ -196,19 +196,22 @@ fn write_markdown(file: &mut File, schema: &str, tables: &[TableDef]) -> std::io
 ///
 /// 코멘트의 줄바꿈·`|`, PostgreSQL 기본값의 `||` 연산자는 행을 가르고, MySQL 기본값의
 /// `\` 이스케이프(`'a\nb'`)·`<태그>`·`` ` ``·`*` 는 서식으로 해석돼 다른 값으로 보인다.
-/// `\` `|` `` ` `` `*` `<` 앞에는 백슬래시를 붙이고, 줄바꿈 → `<br>`.
+/// `\` `|` `` ` `` `*` `<` 앞에는 백슬래시를 붙이고, 줄바꿈 → `<br>`. 코멘트의 `[글](url)`·
+/// `![x](url)` 가 링크·외부 이미지가 되지 않게 `](` 의 `(` 도 이스케이프한다 (`text[]` 는 그대로).
 fn cell(s: &str) -> Cow<'_, str> {
-    if !s.contains(['\\', '|', '`', '*', '<', '\n', '\r']) {
+    if !s.contains(['\\', '|', '`', '*', '<', '\n', '\r']) && !s.contains("](") {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len() + 8);
     let mut chars = s.chars().peekable();
+    let mut prev = None;
     while let Some(c) = chars.next() {
         match c {
             '\\' | '|' | '`' | '*' | '<' => {
                 out.push('\\');
                 out.push(c);
             }
+            '(' if prev == Some(']') => out.push_str("\\("),
             '\r' | '\n' => {
                 if c == '\r' && chars.peek() == Some(&'\n') {
                     chars.next();
@@ -217,6 +220,7 @@ fn cell(s: &str) -> Cow<'_, str> {
             }
             c => out.push(c),
         }
+        prev = Some(c);
     }
     Cow::Owned(out)
 }
@@ -284,6 +288,12 @@ mod tests {
         assert_eq!(cell(r"'a\nb'"), r"'a\\nb'");
         assert_eq!(cell("<b>x</b>"), r"\<b>x\</b>");
         assert_eq!(cell("`a` * 2"), r"\`a\` \* 2");
+        // 링크·이미지 문법은 글자 그대로, 배열 타입 `[]` 는 그대로
+        assert_eq!(
+            cell("![x](https://e.x/p.png) [y](u)"),
+            r"![x]\(https://e.x/p.png) [y]\(u)"
+        );
+        assert!(matches!(cell("integer[]"), Cow::Borrowed("integer[]")));
     }
 
     #[test]
