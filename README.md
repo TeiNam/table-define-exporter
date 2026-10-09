@@ -78,6 +78,8 @@ cargo build --release
 | `--database` | — | PostgreSQL 데이터베이스 이름 (PostgreSQL 전용) |
 | `--target-db` | — | 대상 스키마 목록 (쉼표 구분) |
 | `--except-tables` | — | 제외 테이블 패턴 (쉼표 구분, 와일드카드 `%`) |
+| `--ssl-mode` | `prefer` | TLS: `disable`, `prefer`, `require`, `verify-ca`, `verify-full` ([TLS](#지원-데이터베이스) 참고) |
+| `--ssl-ca` | — | 서버 인증서를 검증할 CA 인증서(PEM) — `verify-ca`/`verify-full`과 함께 사용 |
 | `--help` | — | 도움말 |
 | `--version` | — | 버전 정보 |
 
@@ -97,6 +99,9 @@ cargo build --release
 
 # 특정 스키마만 내보내기 + 제외 패턴
 ./td-export --target-db public,app_schema --except-tables 'tmp_%,log_%'
+
+# 서버 인증서 검증 (예: RDS CA 번들)
+./td-export --endpoint mydb.xxxx.rds.amazonaws.com --ssl-mode verify-full --ssl-ca global-bundle.pem
 
 # 상세 로그 활성화
 RUST_LOG=debug ./td-export
@@ -147,7 +152,11 @@ RUST_LOG=debug ./td-export
 
 ## 지원 데이터베이스
 
-서버가 TLS를 지원하면 자동으로 TLS로 접속합니다 (MySQL `Preferred` / PostgreSQL `Prefer` — 서버 인증서는 검증하지 않음). 덕분에 MySQL 8 기본 인증(`caching_sha2_password`)을 서버 재시작 직후에도 쓸 수 있고, SSL을 강제하는 서버(`hostssl`, RDS `rds.force_ssl` 등)에도 접속됩니다.
+기본(`--ssl-mode prefer`)은 서버가 TLS를 지원하면 TLS로 접속합니다 (서버 인증서는 검증하지 않음). 덕분에 MySQL 8 기본 인증(`caching_sha2_password`)을 서버 재시작 직후에도 쓸 수 있고, SSL을 강제하는 서버(`hostssl`, RDS `rds.force_ssl` 등)에도 접속됩니다.
+
+- `require`: TLS 필수 (인증서 검증 없음)
+- `verify-ca`: 서버 인증서가 신뢰하는 CA로 서명됐는지 검증, `verify-full`: 여기에 인증서의 호스트 이름이 `--endpoint`와 같은지까지 검증. `--ssl-ca`를 주지 않으면 공개 루트 인증서로 검증하므로, 사설 CA·RDS 같은 클라우드 CA는 CA 번들 파일을 `--ssl-ca`로 지정하세요.
+- `disable`: TLS를 쓰지 않습니다. TLS 1.2 이상을 지원하지 않는 구형 서버(예: yaSSL로 빌드된 MySQL 5.7.27 이하 — TLS 1.0/1.1만 지원)는 `prefer`에서 TLS 협상이 실패하므로 `--ssl-mode disable`로 접속하세요.
 
 ### MySQL
 

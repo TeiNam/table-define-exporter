@@ -13,7 +13,7 @@ use td_export::{
     config::{self, CliOverrides},
     db::{DbClient, DbClientEnum},
     export::create_exporter,
-    model::{DbType, OutputFormat, TableDef},
+    model::{DbType, OutputFormat, SslMode, TableDef, TlsOptions},
 };
 
 /// 테이블 메타데이터 동시 조회 상한.
@@ -65,6 +65,16 @@ struct Cli {
     /// 제외 테이블 패턴 (쉼표 구분, 와일드카드 `%` 사용 가능)
     #[arg(long = "except-tables", value_name = "PATTERNS", value_delimiter = ',')]
     except_tables: Option<Vec<String>>,
+
+    /// TLS 접속 방식 — prefer·require 는 서버 인증서를 검증하지 않고, verify-ca 는 CA 서명,
+    /// verify-full 은 CA 서명과 호스트 이름까지 검증. TLS 1.2 미지원 구형 서버는 disable
+    #[arg(long = "ssl-mode", value_name = "MODE", value_enum, default_value_t = SslMode::Prefer)]
+    ssl_mode: SslMode,
+
+    /// 서버 인증서를 검증할 CA 인증서 파일(PEM) — verify-ca / verify-full 과 함께 사용
+    /// (미지정 시 공개 루트 인증서로 검증)
+    #[arg(long = "ssl-ca", value_name = "FILE")]
+    ssl_ca: Option<std::path::PathBuf>,
 }
 
 impl Cli {
@@ -72,8 +82,8 @@ impl Cli {
     ///
     /// `output`과 `db_type`은 `clap::ValueEnum`을 통해 이미 타입 수준에서
     /// 검증되었으므로 추가 파싱이 필요 없다.
-    fn into_overrides(self) -> CliOverrides {
-        CliOverrides {
+    fn into_overrides(self) -> Result<CliOverrides> {
+        Ok(CliOverrides {
             output_format: self.output,
             db_type: self.db_type,
             endpoint: self.endpoint,
@@ -82,7 +92,8 @@ impl Cli {
             database: self.database,
             target_db: self.target_db,
             except_tables: self.except_tables,
-        }
+            tls: TlsOptions::new(self.ssl_mode, self.ssl_ca)?,
+        })
     }
 }
 
@@ -182,7 +193,7 @@ pub async fn run() -> Result<()> {
     tracing::info!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
     // CLI 오버라이드 변환 (clap ValueEnum이 입력값을 이미 검증)
-    let overrides = cli.into_overrides();
+    let overrides = cli.into_overrides()?;
 
     // 대화식 설정 수집 (CLI 오버라이드가 있는 필드는 프롬프트 생략)
     let config = config::load_config(overrides).context("설정 로드 실패")?;

@@ -14,6 +14,9 @@ pub enum AppError {
     #[error("잘못된 포트 번호: {0}")]
     InvalidPort(String),
 
+    #[error("잘못된 TLS 설정: {0}")]
+    InvalidTlsOption(String),
+
     #[error("DB 연결 실패 ({endpoint}:{port}): {source}")]
     DbConnection {
         endpoint: String,

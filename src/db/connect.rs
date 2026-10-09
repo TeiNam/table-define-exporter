@@ -19,10 +19,10 @@
 //! - 반환 값은 sqlx 타입이므로 이후 `.log_statements(...)` 등 sqlx 옵션 체이닝이
 //!   그대로 가능하다.
 
-use sqlx::mysql::MySqlConnectOptions;
-use sqlx::postgres::PgConnectOptions;
+use sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
+use sqlx::postgres::{PgConnectOptions, PgSslMode};
 
-use crate::model::RunConfig;
+use crate::model::{RunConfig, SslMode};
 
 /// [`RunConfig`]로부터 MySQL 접속 옵션을 빌드한다.
 ///
@@ -47,16 +47,28 @@ use crate::model::RunConfig;
 ///     output_format: OutputFormat::Excel,
 ///     db_type: DbType::MySql,
 ///     database: None,
+///     tls: Default::default(),
 /// };
 /// let _options = mysql_options(&cfg);
 /// ```
 pub fn mysql_options(config: &RunConfig) -> MySqlConnectOptions {
-    MySqlConnectOptions::new()
+    let options = MySqlConnectOptions::new()
         .host(&config.endpoint)
         .port(config.port)
         .username(&config.user)
         .password(config.password.expose())
         .database("information_schema")
+        .ssl_mode(match config.tls.mode {
+            SslMode::Disable => MySqlSslMode::Disabled,
+            SslMode::Prefer => MySqlSslMode::Preferred,
+            SslMode::Require => MySqlSslMode::Required,
+            SslMode::VerifyCa => MySqlSslMode::VerifyCa,
+            SslMode::VerifyFull => MySqlSslMode::VerifyIdentity,
+        });
+    match &config.tls.ca {
+        Some(ca) => options.ssl_ca(ca),
+        None => options,
+    }
 }
 
 /// [`RunConfig`]로부터 PostgreSQL 접속 옵션을 빌드한다.
@@ -82,17 +94,29 @@ pub fn mysql_options(config: &RunConfig) -> MySqlConnectOptions {
 ///     output_format: OutputFormat::Sql,
 ///     db_type: DbType::Postgres,
 ///     database: Some("app".to_string()),
+///     tls: Default::default(),
 /// };
 /// let _options = pg_options(&cfg);
 /// ```
 pub fn pg_options(config: &RunConfig) -> PgConnectOptions {
     // database가 None이면 PostgreSQL 기본 DB(`postgres`)로 접속해 카탈로그를 조회한다.
     let db = config.database.as_deref().unwrap_or("postgres");
-    PgConnectOptions::new()
+    let options = PgConnectOptions::new()
         .host(&config.endpoint)
         .port(config.port)
         .username(&config.user)
         .password(config.password.expose())
         .database(db)
         .application_name("td-export")
+        .ssl_mode(match config.tls.mode {
+            SslMode::Disable => PgSslMode::Disable,
+            SslMode::Prefer => PgSslMode::Prefer,
+            SslMode::Require => PgSslMode::Require,
+            SslMode::VerifyCa => PgSslMode::VerifyCa,
+            SslMode::VerifyFull => PgSslMode::VerifyFull,
+        });
+    match &config.tls.ca {
+        Some(ca) => options.ssl_root_cert(ca),
+        None => options,
+    }
 }

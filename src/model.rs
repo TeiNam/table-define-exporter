@@ -103,6 +103,46 @@ impl DbType {
     }
 }
 
+/// TLS 접속 방식 (`--ssl-mode`). 서버 인증서는 `verify-ca`(CA 서명)·`verify-full`(CA 서명 +
+/// 호스트 이름)에서만 검증한다.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum SslMode {
+    /// TLS 를 쓰지 않음 (TLS 1.2 를 지원하지 않는 구형 서버용)
+    Disable,
+    /// 서버가 지원하면 TLS — 인증서는 검증하지 않음 (기본값)
+    #[default]
+    Prefer,
+    /// TLS 필수 — 인증서는 검증하지 않음
+    Require,
+    /// TLS 필수 + 서버 인증서가 신뢰하는 CA 로 서명됐는지 검증
+    VerifyCa,
+    /// `verify-ca` + 인증서의 호스트 이름이 endpoint 와 같은지 검증
+    VerifyFull,
+}
+
+/// TLS 설정 (`--ssl-mode`, `--ssl-ca`)
+#[derive(Debug, Clone, Default)]
+pub struct TlsOptions {
+    pub mode: SslMode,
+    /// 서버 인증서를 검증할 CA 인증서(PEM). 없으면 공개 루트 인증서로 검증한다
+    pub ca: Option<std::path::PathBuf>,
+}
+
+impl TlsOptions {
+    /// CA 인증서는 검증하는 모드에서만 의미가 있다 — 다른 모드에 주면 검증된다고 오해하지 않게 거부한다.
+    pub fn new(
+        mode: SslMode,
+        ca: Option<std::path::PathBuf>,
+    ) -> Result<Self, crate::error::AppError> {
+        if ca.is_some() && !matches!(mode, SslMode::VerifyCa | SslMode::VerifyFull) {
+            return Err(crate::error::AppError::InvalidTlsOption(
+                "--ssl-ca 는 --ssl-mode verify-ca 또는 verify-full 과 함께 쓰세요".to_string(),
+            ));
+        }
+        Ok(Self { mode, ca })
+    }
+}
+
 /// 한 번의 실행에 필요한 모든 설정값 (불변)
 #[derive(Clone)]
 pub struct RunConfig {
@@ -119,6 +159,8 @@ pub struct RunConfig {
     pub db_type: DbType,
     /// PostgreSQL 전용: 접속할 데이터베이스 이름. MySQL에서는 사용하지 않음.
     pub database: Option<String>,
+    /// TLS 접속 방식과 CA 인증서
+    pub tls: TlsOptions,
 }
 
 /// Debug 구현. password 필드는 `Password` 타입 자체의 `Debug`가
@@ -135,6 +177,7 @@ impl std::fmt::Debug for RunConfig {
             .field("output_format", &self.output_format)
             .field("db_type", &self.db_type)
             .field("database", &self.database)
+            .field("tls", &self.tls)
             .finish()
     }
 }
