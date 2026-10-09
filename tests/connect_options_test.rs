@@ -248,7 +248,7 @@ fn ssl_mode_maps_to_driver_modes_and_ca_requires_verify_mode() {
         output_format: OutputFormat::Sql,
         db_type: DbType::Postgres,
         database: None,
-        tls: TlsOptions::new(mode, None).unwrap(),
+        tls: TlsOptions::new(Some(mode), None).unwrap(),
     };
     assert!(matches!(
         mysql_options(&cfg(SslMode::Prefer)).get_ssl_mode(),
@@ -270,10 +270,26 @@ fn ssl_mode_maps_to_driver_modes_and_ca_requires_verify_mode() {
         pg_options(&cfg(SslMode::VerifyCa)).get_ssl_mode(),
         PgSslMode::VerifyCa
     ));
-    // 기본값은 지금까지와 같은 prefer
-    assert_eq!(TlsOptions::default().mode, SslMode::Prefer);
-    // CA 를 줘도 검증하지 않는 모드면 거부
-    assert!(TlsOptions::new(SslMode::Require, Some("ca.pem".into())).is_err());
-    assert!(TlsOptions::new(SslMode::Prefer, Some("ca.pem".into())).is_err());
-    assert!(TlsOptions::new(SslMode::VerifyFull, Some("ca.pem".into())).is_ok());
+    // 미지정이면 드라이버 기본값을 건드리지 않는다 (PostgreSQL 은 PGSSLMODE 환경변수가 그대로 적용)
+    let unset = RunConfig {
+        tls: TlsOptions::default(),
+        ..cfg(SslMode::Require)
+    };
+    assert!(TlsOptions::default().mode.is_none());
+    assert!(matches!(
+        mysql_options(&unset).get_ssl_mode(),
+        MySqlSslMode::Preferred
+    ));
+    assert_eq!(
+        format!("{:?}", pg_options(&unset).get_ssl_mode()),
+        format!(
+            "{:?}",
+            sqlx::postgres::PgConnectOptions::new().get_ssl_mode()
+        )
+    );
+    // CA 를 줘도 검증하지 않는 모드(또는 모드 미지정)면 거부
+    assert!(TlsOptions::new(Some(SslMode::Require), Some("ca.pem".into())).is_err());
+    assert!(TlsOptions::new(Some(SslMode::Prefer), Some("ca.pem".into())).is_err());
+    assert!(TlsOptions::new(None, Some("ca.pem".into())).is_err());
+    assert!(TlsOptions::new(Some(SslMode::VerifyFull), Some("ca.pem".into())).is_ok());
 }

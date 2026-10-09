@@ -105,12 +105,11 @@ impl DbType {
 
 /// TLS 접속 방식 (`--ssl-mode`). 서버 인증서는 `verify-ca`(CA 서명)·`verify-full`(CA 서명 +
 /// 호스트 이름)에서만 검증한다.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum SslMode {
     /// TLS 를 쓰지 않음 (TLS 1.2 를 지원하지 않는 구형 서버용)
     Disable,
-    /// 서버가 지원하면 TLS — 인증서는 검증하지 않음 (기본값)
-    #[default]
+    /// 서버가 지원하면 TLS — 인증서는 검증하지 않음
     Prefer,
     /// TLS 필수 — 인증서는 검증하지 않음
     Require,
@@ -123,7 +122,9 @@ pub enum SslMode {
 /// TLS 설정 (`--ssl-mode`, `--ssl-ca`)
 #[derive(Debug, Clone, Default)]
 pub struct TlsOptions {
-    pub mode: SslMode,
+    /// `None` 이면 드라이버 기본값 — MySQL 은 prefer, PostgreSQL 은 `PGSSLMODE` 환경변수(없으면 prefer).
+    /// 지정하지 않았는데 prefer 로 덮어쓰면 `PGSSLMODE=verify-full` 로 강제하던 검증이 조용히 꺼진다.
+    pub mode: Option<SslMode>,
     /// 서버 인증서를 검증할 CA 인증서(PEM). 없으면 공개 루트 인증서로 검증한다
     pub ca: Option<std::path::PathBuf>,
 }
@@ -131,10 +132,10 @@ pub struct TlsOptions {
 impl TlsOptions {
     /// CA 인증서는 검증하는 모드에서만 의미가 있다 — 다른 모드에 주면 검증된다고 오해하지 않게 거부한다.
     pub fn new(
-        mode: SslMode,
+        mode: Option<SslMode>,
         ca: Option<std::path::PathBuf>,
     ) -> Result<Self, crate::error::AppError> {
-        if ca.is_some() && !matches!(mode, SslMode::VerifyCa | SslMode::VerifyFull) {
+        if ca.is_some() && !matches!(mode, Some(SslMode::VerifyCa | SslMode::VerifyFull)) {
             return Err(crate::error::AppError::InvalidTlsOption(
                 "--ssl-ca 는 --ssl-mode verify-ca 또는 verify-full 과 함께 쓰세요".to_string(),
             ));

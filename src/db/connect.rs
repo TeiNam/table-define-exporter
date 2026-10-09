@@ -52,19 +52,21 @@ use crate::model::{RunConfig, SslMode};
 /// let _options = mysql_options(&cfg);
 /// ```
 pub fn mysql_options(config: &RunConfig) -> MySqlConnectOptions {
-    let options = MySqlConnectOptions::new()
+    let mut options = MySqlConnectOptions::new()
         .host(&config.endpoint)
         .port(config.port)
         .username(&config.user)
         .password(config.password.expose())
-        .database("information_schema")
-        .ssl_mode(match config.tls.mode {
+        .database("information_schema");
+    if let Some(mode) = config.tls.mode {
+        options = options.ssl_mode(match mode {
             SslMode::Disable => MySqlSslMode::Disabled,
             SslMode::Prefer => MySqlSslMode::Preferred,
             SslMode::Require => MySqlSslMode::Required,
             SslMode::VerifyCa => MySqlSslMode::VerifyCa,
             SslMode::VerifyFull => MySqlSslMode::VerifyIdentity,
         });
+    }
     match &config.tls.ca {
         Some(ca) => options.ssl_ca(ca),
         None => options,
@@ -101,20 +103,23 @@ pub fn mysql_options(config: &RunConfig) -> MySqlConnectOptions {
 pub fn pg_options(config: &RunConfig) -> PgConnectOptions {
     // database가 None이면 PostgreSQL 기본 DB(`postgres`)로 접속해 카탈로그를 조회한다.
     let db = config.database.as_deref().unwrap_or("postgres");
-    let options = PgConnectOptions::new()
+    // `PgConnectOptions::new()` 이 PGSSLMODE·PGSSLROOTCERT 를 읽으므로 --ssl-mode 를 줬을 때만 덮어쓴다
+    let mut options = PgConnectOptions::new()
         .host(&config.endpoint)
         .port(config.port)
         .username(&config.user)
         .password(config.password.expose())
         .database(db)
-        .application_name("td-export")
-        .ssl_mode(match config.tls.mode {
+        .application_name("td-export");
+    if let Some(mode) = config.tls.mode {
+        options = options.ssl_mode(match mode {
             SslMode::Disable => PgSslMode::Disable,
             SslMode::Prefer => PgSslMode::Prefer,
             SslMode::Require => PgSslMode::Require,
             SslMode::VerifyCa => PgSslMode::VerifyCa,
             SslMode::VerifyFull => PgSslMode::VerifyFull,
         });
+    }
     match &config.tls.ca {
         Some(ca) => options.ssl_root_cert(ca),
         None => options,
