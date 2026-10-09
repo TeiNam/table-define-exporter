@@ -65,6 +65,7 @@ fn make_run_config() -> RunConfig {
         output_format: OutputFormat::Markdown,
         db_type: DbType::MySql,
         database: None,
+        tls: Default::default(),
     }
 }
 

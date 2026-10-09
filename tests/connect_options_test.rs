@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use proptest::prelude::*;
 use td_export::db::connect::{mysql_options, pg_options};
-use td_export::model::{DbType, OutputFormat, RunConfig};
+use td_export::model::{DbType, OutputFormat, RunConfig, SslMode, TlsOptions};
 use td_export::secret::Password;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,6 +96,7 @@ fn run_config_strategy() -> impl Strategy<Value = RunConfig> {
                 output_format,
                 db_type,
                 database,
+                tls: Default::default(),
             },
         )
 }
@@ -142,6 +143,7 @@ fn mysql_options_accepts_password_with_url_reserved_chars() {
         output_format: OutputFormat::Excel,
         db_type: DbType::MySql,
         database: None,
+        tls: Default::default(),
     };
     // 패닉 없이 반환되면 성공.
     let _opts = mysql_options(&cfg);
@@ -160,6 +162,7 @@ fn pg_options_accepts_password_with_url_reserved_chars() {
         output_format: OutputFormat::Sql,
         db_type: DbType::Postgres,
         database: Some("app".to_string()),
+        tls: Default::default(),
     };
     let _opts = pg_options(&cfg);
 }
@@ -228,4 +231,49 @@ fn no_url_string_literals_in_db_module() {
          URL 포매팅을 사용하고 있을 수 있음:\n{}",
         violations.join("\n")
     );
+}
+
+/// `--ssl-mode` 가 드라이버 모드로 옮겨지고, `--ssl-ca` 는 검증 모드에서만 받는다.
+#[test]
+fn ssl_mode_maps_to_driver_modes_and_ca_requires_verify_mode() {
+    use sqlx::mysql::MySqlSslMode;
+    use sqlx::postgres::PgSslMode;
+    let cfg = |mode: SslMode| RunConfig {
+        endpoint: "db.example.com".to_string(),
+        port: 5432,
+        user: "u".to_string(),
+        password: Password::new("p".to_string()),
+        target_db: None,
+        except_tables: None,
+        output_format: OutputFormat::Sql,
+        db_type: DbType::Postgres,
+        database: None,
+        tls: TlsOptions::new(mode, None).unwrap(),
+    };
+    assert!(matches!(
+        mysql_options(&cfg(SslMode::Prefer)).get_ssl_mode(),
+        MySqlSslMode::Preferred
+    ));
+    assert!(matches!(
+        mysql_options(&cfg(SslMode::Disable)).get_ssl_mode(),
+        MySqlSslMode::Disabled
+    ));
+    assert!(matches!(
+        mysql_options(&cfg(SslMode::VerifyFull)).get_ssl_mode(),
+        MySqlSslMode::VerifyIdentity
+    ));
+    assert!(matches!(
+        pg_options(&cfg(SslMode::Require)).get_ssl_mode(),
+        PgSslMode::Require
+    ));
+    assert!(matches!(
+        pg_options(&cfg(SslMode::VerifyCa)).get_ssl_mode(),
+        PgSslMode::VerifyCa
+    ));
+    // 기본값은 지금까지와 같은 prefer
+    assert_eq!(TlsOptions::default().mode, SslMode::Prefer);
+    // CA 를 줘도 검증하지 않는 모드면 거부
+    assert!(TlsOptions::new(SslMode::Require, Some("ca.pem".into())).is_err());
+    assert!(TlsOptions::new(SslMode::Prefer, Some("ca.pem".into())).is_err());
+    assert!(TlsOptions::new(SslMode::VerifyFull, Some("ca.pem".into())).is_ok());
 }
