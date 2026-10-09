@@ -6,6 +6,8 @@
 //! 덧붙인다. 외부 테이블 파티션은 `CREATE FOREIGN TABLE .. PARTITION OF .. SERVER ..` 로 쓴다.
 // ponytail: 하위 파티션에만 다른 컬럼 기본값과 PG 17 이하의 하위 파티션 전용 NOT NULL 은 생략
 // (PG 18+ 은 NOT NULL 도 제약이라 함께 나온다) — 필요해지면 ALTER COLUMN 으로 추가.
+// ponytail: 상속 인덱스는 PostgreSQL 이 자동 이름으로 만든다 — 원본에서 이름을 바꿨으면 이름만 다르다
+// (pg_dump 처럼 하위 인덱스를 원래 이름으로 만들고 ATTACH PARTITION 하면 보존, 필요해지면).
 
 use sqlx::PgPool;
 

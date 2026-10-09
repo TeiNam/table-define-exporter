@@ -159,6 +159,7 @@ fn write_cross_schema_sql(
     )?;
     writeln!(file, "SET client_encoding = 'UTF8';")?;
     writeln!(file, "SET standard_conforming_strings = on;")?;
+    writeln!(file, "SET search_path = '';")?;
     writeln!(file)?;
     for statement in statements {
         writeln!(file, "{statement}")?;
@@ -307,9 +308,12 @@ fn write_sql(
         // 파일은 UTF-8 이고 리터럴은 '' 이스케이프만 쓴다 — 복원 세션 설정과 무관하게 해석되도록
         // 고정한다 (standard_conforming_strings=off 면 '\'' 가 문자열을 탈출해 주입이 된다)
         DbType::Postgres => {
+            // DDL 은 search_path 를 비운 채 만들어 pg_catalog 밖의 이름이 모두 스키마로 한정돼 있다.
+            // 실행할 때도 비워야 public 등의 같은 이름 함수·연산자가 뷰·기본값·CHECK 에 대신 묶이지
+            // 않는다 (pg_dump 와 동일, CVE-2018-1058)
             writeln!(
                 file,
-                "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;"
+                "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\nSET search_path = '';"
             )?;
             // DDL 이 스키마로 한정돼 있으므로 빈 DB 에서도 실행되게 스키마부터 만든다
             match quote_pg_identifier(schema) {
@@ -474,7 +478,7 @@ mod tests {
         assert!(
             pg.contains(
                 "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\n\
-                 CREATE SCHEMA IF NOT EXISTS \"s\";"
+                 SET search_path = '';\nCREATE SCHEMA IF NOT EXISTS \"s\";"
             ),
             "{pg}"
         );
@@ -502,7 +506,7 @@ mod tests {
         write_cross_schema_sql(&mut out, "a", &["ALTER TABLE a.t ADD FK;"]).unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.starts_with("/* Cross-schema : a — "), "{out}");
-        assert!(out.contains("SET standard_conforming_strings = on;\n\nALTER TABLE a.t ADD FK;\n"));
+        assert!(out.contains("SET search_path = '';\n\nALTER TABLE a.t ADD FK;\n"));
     }
 
     #[test]

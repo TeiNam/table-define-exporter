@@ -148,12 +148,8 @@ fn build_table_ddl(
         (None, None) => ddl.push_str("\n);\n"),
     }
 
-    // 인덱스 정의 추가. 파티션 부모의 인덱스는 pg_get_indexdef 가 `ON ONLY` 로 돌려준다.
+    // 인덱스 정의 추가 (파티션 부모의 인덱스는 fetch_table_ddl 이 하위 파티션 뒤에 붙인다)
     for idx_def in index_defs {
-        let idx_def = match partition_key {
-            Some(_) => without_on_only(idx_def),
-            None => idx_def.clone(),
-        };
         ddl.push_str(&format!("{idx_def};\n"));
     }
 
@@ -573,12 +569,19 @@ pub(super) async fn fetch_table_ddl(
         partition_key: partition_key.as_deref(),
         foreign: foreign.as_deref(),
     };
+    // 파티션 부모의 인덱스는 하위 파티션(과 그 자체 인덱스)을 다 만든 뒤에 만든다 — 먼저 만들면
+    // PARTITION OF 가 상속 인덱스를 자동 이름(c1_id_idx)으로 만들어, 원본에서 그 이름을 쓰는 하위
+    // 파티션 자체 인덱스와 충돌한다. 뒤에 만들면 상속 인덱스 쪽이 겹치지 않는 이름을 고른다.
+    let (table_indexes, parent_indexes) = match partition_key {
+        Some(_) => (Vec::new(), index_defs),
+        None => (index_defs, Vec::new()),
+    };
     let mut create = build_table_ddl(
         schema,
         table,
         &ddl_columns,
         &ddl_constraints,
-        &index_defs,
+        &table_indexes,
         &options,
     )?;
     if foreign.is_some() {
@@ -601,6 +604,12 @@ pub(super) async fn fetch_table_ddl(
         append_statements(&mut create, &partitions.create);
         after.extend(partitions.after);
         cross_schema.extend(partitions.cross_schema);
+        // pg_get_indexdef 는 파티션 부모 인덱스를 `ON ONLY` 로 돌려준다 — 하위 파티션에 전파되게 `ON` 으로
+        let parent_indexes: Vec<String> = parent_indexes
+            .iter()
+            .map(|def| format!("{};", without_on_only(def)))
+            .collect();
+        append_statements(&mut create, &parent_indexes);
     }
     let ownership = super::schema_ddl::fetch_sequence_ownership(pool, schema, table).await?;
     append_statements(&mut create, &ownership);
