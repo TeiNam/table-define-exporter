@@ -4,6 +4,8 @@
 //! 테이블보다 먼저 만들어져 있어야 SQL 파일을 빈 DB 에 그대로 실행할 수 있다.
 //! pg_dump 처럼 스키마 파일 맨 앞에 출력한다.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
 use sqlx::PgPool;
 
 use crate::{db::try_get_or_warn, error::AppError, identifier::quote_pg_identifier};
@@ -21,12 +23,11 @@ pub struct PgSequence {
 }
 
 /// 스키마의 사용자 타입·시퀀스 생성문. 시퀀스를 먼저(도메인 기본값이 `nextval` 을 쓸 수 있음),
-/// 그다음 enum / 도메인 / 복합 / range 타입을 종류와 무관하게 OID(생성) 순으로 낸다 — 타입은
-/// 의존하는 타입보다 늦게 만들어지므로 OID 순이 곧 의존 순서다 (예: 복합 타입 위의 도메인).
+/// 그다음 enum / 도메인 / 복합 / range 타입을 `pg_depend` 의 의존 순서로 낸다 (같은 단계는 OID 순).
+/// OID 순만으로는 `ALTER TYPE c ADD ATTRIBUTE .. e` 처럼 나중에 만든 타입을 참조하게 된 경우가 깨진다.
 ///
 /// identity 컬럼의 내부 시퀀스는 `GENERATED ... AS IDENTITY` 가 만들므로 제외한다.
-// ponytail: base(C) 타입·range 의 subtype_opclass/canonical/subtype_diff·타입 코멘트·권한은 생략,
-// ALTER TYPE 으로 나중에 더 새 타입을 참조하게 된 경우의 순서도 OID 기준 — 필요해지면 의존성 정렬.
+// ponytail: base(C) 타입·range 의 subtype_opclass/canonical/subtype_diff·타입 코멘트·권한은 생략.
 pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<String>, AppError> {
     const LABEL: &str = "schema objects";
     let query_err = |e| AppError::MetadataQuery {
@@ -230,9 +231,67 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
         }
     }
 
-    types.sort_by_key(|(oid, _)| *oid);
-    statements.extend(types.into_iter().map(|(_, statement)| statement));
+    // 타입 간 의존 (도메인의 기반·기본값·CHECK, 복합 타입 속성, range 의 subtype). 배열 타입은 원소 타입으로.
+    // 조회에 실패해도 타입은 내보낸다 — OID 순으로 대신한다.
+    let deps = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT t.oid::int8, \
+                (CASE WHEN rt.typcategory = 'A' AND rt.typelem <> 0 \
+                      THEN rt.typelem ELSE rt.oid END)::int8 \
+         FROM pg_catalog.pg_type t \
+         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
+         JOIN pg_catalog.pg_depend d \
+           ON (d.classid = 'pg_catalog.pg_type'::regclass AND d.objid = t.oid) \
+           OR (d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = t.typrelid) \
+           OR (d.classid = 'pg_catalog.pg_constraint'::regclass AND d.objid IN ( \
+                 SELECT c.oid FROM pg_catalog.pg_constraint c WHERE c.contypid = t.oid)) \
+         JOIN pg_catalog.pg_type rt \
+           ON d.refclassid = 'pg_catalog.pg_type'::regclass AND rt.oid = d.refobjid \
+         WHERE n.nspname = $1 AND t.typtype IN ('e', 'd', 'c', 'r')",
+    )
+    .bind(schema)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!("{schema} 타입 의존 관계 조회 실패 — 생성(OID) 순으로 출력: {e}");
+        Vec::new()
+    });
+    statements.extend(order_by_dependency(types, &deps));
     Ok(statements)
+}
+
+/// `(oid, 생성문)` 을 의존 순서로 — `deps` 의 `(t, d)` 는 t 가 d 를 쓴다는 뜻. 먼저 만들 수 있는
+/// 것 중 OID 가 작은 것부터 (Kahn). PostgreSQL 은 타입 순환을 막지만, 남으면 OID 순으로 붙인다.
+fn order_by_dependency(types: Vec<(i64, String)>, deps: &[(i64, i64)]) -> Vec<String> {
+    let mut statements: BTreeMap<i64, String> = types.into_iter().collect();
+    let mut dependents: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut pending: HashMap<i64, usize> = HashMap::new();
+    for &(t, d) in deps {
+        if t != d && statements.contains_key(&t) && statements.contains_key(&d) {
+            dependents.entry(d).or_default().push(t);
+            *pending.entry(t).or_default() += 1;
+        }
+    }
+    let mut ready: BTreeSet<i64> = statements
+        .keys()
+        .copied()
+        .filter(|t| !pending.contains_key(t))
+        .collect();
+    let mut ordered = Vec::with_capacity(statements.len());
+    while let Some(t) = ready.pop_first() {
+        if let Some(statement) = statements.remove(&t) {
+            ordered.push(statement);
+        }
+        for &u in dependents.get(&t).into_iter().flatten() {
+            if let Some(n) = pending.get_mut(&u) {
+                *n -= 1;
+                if *n == 0 {
+                    ready.insert(u);
+                }
+            }
+        }
+    }
+    ordered.extend(statements.into_values());
+    ordered
 }
 
 /// 테이블 컬럼이 소유한(serial) 시퀀스의 `ALTER SEQUENCE ... OWNED BY ...;`.
@@ -409,6 +468,19 @@ fn build_sequence_ddl(schema: &str, name: &str, seq: &PgSequence) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn types_follow_dependencies_then_oid() {
+        // 10: 복합 c(속성 e), 20: enum e, 30: 도메인 d(기반 c) — OID 순이면 c 가 e 보다 먼저라 실패
+        let types = vec![
+            (10, "c".to_string()),
+            (20, "e".to_string()),
+            (30, "d".to_string()),
+            (40, "free".to_string()),
+        ];
+        let deps = [(10, 20), (10, 20), (30, 10), (30, 999), (40, 40)];
+        assert_eq!(order_by_dependency(types, &deps), ["e", "c", "d", "free"]);
+    }
 
     #[test]
     fn builds_schema_object_ddl() {
