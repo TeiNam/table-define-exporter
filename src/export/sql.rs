@@ -65,8 +65,10 @@ pub fn apply_sql_terminator(ddl: &str, db_type: DbType) -> String {
 pub struct SqlExporter {
     /// 스키마명 → 파일 핸들 맵
     files: HashMap<String, File>,
-    /// 엔드포인트 (파일명에 사용)
-    endpoint: String,
+    /// 접속 대상 표기 (파일명에 사용) — [`super::source_label`]
+    source: String,
+    /// 다른 스키마를 참조하는 FK — 모든 스키마를 쓴 뒤 별도 파일로 낸다
+    cross_schema: Vec<String>,
     /// DB 종류 (식별자 인용 규칙 + Terminator 선택에 사용) — Req 14.4
     db_type: DbType,
     /// 스키마명 → 테이블보다 먼저 쓸 문장 (PostgreSQL 사용자 타입·시퀀스)
@@ -77,7 +79,8 @@ impl SqlExporter {
     pub fn new() -> Self {
         Self {
             files: HashMap::new(),
-            endpoint: String::new(),
+            source: String::new(),
+            cross_schema: Vec::new(),
             // 초기값은 MySQL. 실제 값은 `setup`에서 `config.db_type`으로 덮어쓴다.
             db_type: DbType::MySql,
             preambles: HashMap::new(),
@@ -93,13 +96,13 @@ impl Default for SqlExporter {
 
 impl Exporter for SqlExporter {
     fn setup(&mut self, catalog: &SchemaCatalog, config: &RunConfig) -> Result<(), AppError> {
-        self.endpoint = config.endpoint.clone();
         // Req 14.4: config.db_type을 필드에 보관해 이후 write_tables에서 재사용한다.
         self.db_type = config.db_type;
 
         // 스키마별 .sql 파일 생성 (기존 파일 덮어쓰기)
-        let source = super::source_label(config);
-        self.files = super::create_schema_files(Path::new(""), catalog.keys(), &source, "sql")?;
+        self.source = super::source_label(config);
+        self.files =
+            super::create_schema_files(Path::new(""), catalog.keys(), &self.source, "sql")?;
         Ok(())
     }
 
@@ -111,7 +114,13 @@ impl Exporter for SqlExporter {
         };
 
         write_sql(file, schema, &preamble, tables, self.db_type)
-            .map_err(|source| AppError::FileWrite { source })
+            .map_err(|source| AppError::FileWrite { source })?;
+        self.cross_schema.extend(
+            tables
+                .iter()
+                .flat_map(|t| t.ddl_cross_schema.iter().cloned()),
+        );
+        Ok(())
     }
 
     fn set_schema_preamble(&mut self, schema: &str, statements: Vec<String>) {
@@ -120,8 +129,35 @@ impl Exporter for SqlExporter {
 
     fn finish(&mut self) -> Result<(), AppError> {
         self.files.clear();
+        if self.cross_schema.is_empty() {
+            return Ok(());
+        }
+        let filename = super::cross_schema_filename(&self.source);
+        let mut file = File::create(&filename).map_err(|source| AppError::FileWrite { source })?;
+        write_cross_schema_sql(&mut file, &self.cross_schema)
+            .map_err(|source| AppError::FileWrite { source })?;
+        tracing::info!(
+            "다른 스키마를 참조하는 FK {}건 → {filename} (모든 스키마 파일 실행 후 실행)",
+            self.cross_schema.len()
+        );
         Ok(())
     }
+}
+
+/// 다른 스키마를 참조하는 FK 파일 — 스키마끼리 서로 참조해도 스키마 파일을 모두 실행한 뒤
+/// 이 파일을 실행하면 된다 (PostgreSQL 전용).
+fn write_cross_schema_sql(file: &mut impl Write, statements: &[String]) -> std::io::Result<()> {
+    writeln!(
+        file,
+        "/* Cross-schema Foreign Keys — 모든 스키마 파일을 실행한 뒤 실행 */"
+    )?;
+    writeln!(file, "SET client_encoding = 'UTF8';")?;
+    writeln!(file, "SET standard_conforming_strings = on;")?;
+    writeln!(file)?;
+    for statement in statements {
+        writeln!(file, "{statement}")?;
+    }
+    Ok(())
 }
 
 /// 테이블명을 DB 종류별 규칙으로 인용한다 (Req 2.1).
@@ -140,7 +176,7 @@ fn quote_table_name(db_type: DbType, table_name: &str) -> Result<String, AppErro
 /// 뷰를 서로의 참조 순서대로 정렬한다 (참조되는 뷰가 먼저, 나머지는 입력 순서 = 이름 순).
 ///
 /// 정의 SQL 에 다른 뷰의 한정 이름이 나오면 의존으로 본다 — PostgreSQL 은 검색 경로를 비워
-/// 참조가 항상 `schema.view` 로, MySQL 의 SHOW CREATE VIEW 는 항상 `` `db`.`view` `` 로 나온다.
+/// 참조가 항상 `schema.view` 로, MySQL 은 해당 DB 를 USE 한 뒤 받아 같은 DB 뷰는 `` `view` `` 로 나온다.
 /// 문자열 리터럴 속 이름 같은 오탐으로 순환이 생기면 남은 뷰는 입력 순서대로 둔다.
 fn order_views<'a>(schema: &str, views: Vec<&'a TableDef>, db_type: DbType) -> Vec<&'a TableDef> {
     let deps: Vec<Vec<usize>> = views
@@ -320,6 +356,7 @@ mod tests {
             table_name: name.to_string(),
             ddl: Some(create.to_string()),
             ddl_after: after.iter().map(|s| s.to_string()).collect(),
+            ddl_cross_schema: Vec::new(),
             ..Default::default()
         }
     }
@@ -389,6 +426,15 @@ mod tests {
         );
         let my = render(DbType::MySql, &[]);
         assert!(my.contains("SET NAMES utf8mb4;"), "{my}");
+    }
+
+    #[test]
+    fn cross_schema_fk_file_has_header_and_statements() {
+        let mut out = Vec::new();
+        write_cross_schema_sql(&mut out, &["ALTER TABLE a.t ADD FK;".to_string()]).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.starts_with("/* Cross-schema Foreign Keys"), "{out}");
+        assert!(out.contains("SET standard_conforming_strings = on;\n\nALTER TABLE a.t ADD FK;\n"));
     }
 
     #[test]

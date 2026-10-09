@@ -197,6 +197,8 @@ pub struct TableDef {
     pub ddl: Option<String>,
     /// 모든 테이블의 CREATE 뒤에 실행할 문장 (PostgreSQL FK 의 `ALTER TABLE ... ADD CONSTRAINT`)
     pub ddl_after: Vec<String>,
+    /// 다른 스키마를 참조하는 PostgreSQL FK — 스키마 파일이 아닌 별도 파일에 쓴다
+    pub ddl_cross_schema: Vec<String>,
 }
 
 /// SQL 출력용 테이블 DDL
@@ -206,6 +208,8 @@ pub struct TableDdl {
     pub create: String,
     /// 모든 테이블을 만든 뒤 실행할 문장 (참조 대상이 먼저 있어야 하는 FK 등)
     pub after: Vec<String>,
+    /// 다른 스키마를 참조하는 FK — 모든 스키마 파일을 실행한 뒤 실행할 별도 파일에 모은다
+    pub cross_schema: Vec<String>,
 }
 
 impl TableDef {
@@ -245,7 +249,10 @@ impl TableDef {
         if let Some(v) = &self.view {
             total += v.view_query.len() + v.charset.len() + v.collate.len();
         }
-        total + opt(&self.ddl) + self.ddl_after.iter().map(String::len).sum::<usize>()
+        total
+            + opt(&self.ddl)
+            + self.ddl_after.iter().map(String::len).sum::<usize>()
+            + self.ddl_cross_schema.iter().map(String::len).sum::<usize>()
     }
 }
 

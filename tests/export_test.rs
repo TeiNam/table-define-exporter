@@ -40,6 +40,7 @@ fn make_base_table(name: &str) -> TableDef {
         constraints: vec![],
         view: None,
         ddl_after: Vec::new(),
+        ddl_cross_schema: Vec::new(),
         ddl: Some(
             "CREATE TABLE `test` (`id` int NOT NULL AUTO_INCREMENT, PRIMARY KEY (`id`))"
                 .to_string(),
@@ -66,6 +67,7 @@ fn make_view_table(name: &str) -> TableDef {
             collate: "utf8mb4_general_ci".to_string(),
         }),
         ddl_after: Vec::new(),
+        ddl_cross_schema: Vec::new(),
         ddl: None,
     }
 }
@@ -75,7 +77,9 @@ fn make_view_table(name: &str) -> TableDef {
 // Validates: Requirements 9.1, 10.5, 11.1
 // ─────────────────────────────────────────────────────────────────────────────
 
-use td_export::export::{schema_filename, schema_filenames, source_label, workbook_filename};
+use td_export::export::{
+    cross_schema_filename, schema_filename, schema_filenames, source_label, workbook_filename,
+};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
@@ -176,6 +180,10 @@ fn filenames_avoid_device_names_and_length_limit() {
     // 장치 이름이 일부일 뿐이면 그대로
     assert_eq!(schema_filename("NUL", "h", "md"), "NUL(h).md");
     assert_eq!(workbook_filename("console"), "console.xlsx");
+    assert_eq!(
+        cross_schema_filename("db.local_55432@app"),
+        "db.local_55432@app.cross-schema-fk.sql"
+    );
 
     let long_a = "가".repeat(100);
     let long_b = format!("{}나", "가".repeat(99));
@@ -879,6 +887,7 @@ fn base_table_bytes_unchanged_after_view_fence_fix() {
         }],
         view: None,
         ddl_after: Vec::new(),
+        ddl_cross_schema: Vec::new(),
         ddl: Some("CREATE TABLE orders ()".to_string()),
     };
 

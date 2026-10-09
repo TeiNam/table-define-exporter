@@ -174,6 +174,7 @@ async fn enrich_table_inner(
             Ok(ddl) => {
                 table.ddl = Some(ddl.create);
                 table.ddl_after = ddl.after;
+                table.ddl_cross_schema = ddl.cross_schema;
             }
             Err(e) => {
                 tracing::warn!("{} - {}: {}", schema, table.table_name, e);
