@@ -48,6 +48,7 @@ fn make_view_table(sql: String) -> TableDef {
             collate: "utf8mb4_general_ci".to_string(),
         }),
         ddl_after: Vec::new(),
+        ddl_cross_schema: Vec::new(),
         ddl: None,
     }
 }

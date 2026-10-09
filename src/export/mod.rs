@@ -68,6 +68,12 @@ pub fn workbook_filename(source: &str) -> String {
     fit_filename(&sanitize_filename_part(source), "xlsx")
 }
 
+/// 다른 스키마를 참조하는 PostgreSQL FK 를 모은 파일명: `{source}.cross-schema-fk.sql`
+/// (스키마 파일 `{schema}({source}).sql` 과 겹치지 않는다)
+pub fn cross_schema_filename(source: &str) -> String {
+    fit_filename(&sanitize_filename_part(source), "cross-schema-fk.sql")
+}
+
 /// 파일 이름 한 개의 최대 길이 (대부분의 파일 시스템이 255바이트)
 const MAX_FILENAME_BYTES: usize = 255;
 

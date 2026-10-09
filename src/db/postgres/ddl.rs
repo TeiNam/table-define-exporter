@@ -428,7 +428,7 @@ pub(super) async fn fetch_table_ddl(
         append_statements(&mut create, &comments);
         return Ok(TableDdl {
             create,
-            after: Vec::new(),
+            ..Default::default()
         });
     }
 
@@ -575,17 +575,30 @@ pub(super) async fn fetch_table_ddl(
         let column_options = super::foreign::fetch_column_options_ddl(pool, schema, table).await?;
         append_statements(&mut create, &column_options);
     }
+    // 다른 스키마를 참조하는 FK 는 별도 파일로 — 스키마끼리 서로 참조하면 어느 스키마 파일을
+    // 먼저 실행해도 참조 대상이 없어 실패한다
+    let (cross_fks, local): (Vec<PgDdlConstraint>, Vec<PgDdlConstraint>) =
+        ddl_constraints.iter().cloned().partition(|c| {
+            matches!(&c.constraint_type, PgConstraintType::ForeignKey { ref_schema, .. }
+                if ref_schema != schema)
+        });
     let mut after = deferred_defaults;
-    after.extend(build_pg_fk_ddl(schema, table, &ddl_constraints)?);
+    after.extend(build_pg_fk_ddl(schema, table, &local)?);
+    let mut cross_schema = build_pg_fk_ddl(schema, table, &cross_fks)?;
     if partition_key.is_some() {
         let partitions = super::partition::fetch_partitions_ddl(pool, schema, table).await?;
         append_statements(&mut create, &partitions.create);
         after.extend(partitions.after);
+        cross_schema.extend(partitions.cross_schema);
     }
     let ownership = super::schema_ddl::fetch_sequence_ownership(pool, schema, table).await?;
     append_statements(&mut create, &ownership);
     append_statements(&mut create, &comments);
-    Ok(TableDdl { create, after })
+    Ok(TableDdl {
+        create,
+        after,
+        cross_schema,
+    })
 }
 
 /// 테이블의 PK/UNIQUE/FK/CHECK/EXCLUDE/NOT NULL(PG 18+) 제약 조건을 `pg_constraint` 에서 조회한다.

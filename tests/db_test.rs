@@ -188,6 +188,7 @@ fn build_pg_table_def(table_name: &str, db_collation: &str, columns: Vec<ColumnI
         constraints: Vec::new(),
         view: None,
         ddl_after: Vec::new(),
+        ddl_cross_schema: Vec::new(),
         ddl: None,
     }
 }
@@ -213,6 +214,7 @@ fn build_pg_view_def(view_name: &str, db_collation: &str, view_query: &str) -> T
             collate: String::new(),
         }),
         ddl_after: Vec::new(),
+        ddl_cross_schema: Vec::new(),
         ddl: None,
     }
 }

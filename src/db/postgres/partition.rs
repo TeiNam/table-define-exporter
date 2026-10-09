@@ -14,10 +14,12 @@ use super::parse::without_on_only;
 use crate::{db::try_get_or_warn, error::AppError, identifier::quote_pg_identifier};
 
 /// 하위 파티션 DDL — 부모 DDL 바로 뒤에 둘 문장과, FK 처럼 모든 테이블 뒤에 둘 문장
+/// (다른 스키마를 참조하는 FK 는 `cross_schema` — [`crate::model::TableDdl::cross_schema`])
 #[derive(Debug, Default)]
 pub(super) struct PartitionDdl {
     pub create: Vec<String>,
     pub after: Vec<String>,
+    pub cross_schema: Vec<String>,
 }
 
 /// 부모 테이블의 모든 하위 파티션 생성문 (단계 순 — 하위의 하위 파티션까지).
@@ -73,24 +75,30 @@ pub(super) async fn fetch_partitions_ddl(
             ddl.create
                 .extend(fetch_column_options_ddl(pool, &child_schema, &child).await?);
         }
-        let own = fetch_partition_own_objects(pool, &child_schema, &child).await?;
+        let own = fetch_partition_own_objects(pool, schema, &child_schema, &child).await?;
         ddl.create.extend(own.create);
         ddl.after.extend(own.after);
+        ddl.cross_schema.extend(own.cross_schema);
         let comments = super::comment::fetch_comment_ddl(pool, &child_schema, &child).await?;
         ddl.create.extend(comments);
     }
     Ok(ddl)
 }
 
-/// 하위 파티션에만 있는(부모에서 상속되지 않은) 제약과 인덱스.
+/// 하위 파티션에만 있는(부모에서 상속되지 않은) 제약과 인덱스. `file_schema` 는 이 DDL 을 쓸
+/// 스키마 파일(부모 테이블의 스키마) — 다른 스키마를 참조하는 FK 를 가려낸다.
 async fn fetch_partition_own_objects(
     pool: &PgPool,
+    file_schema: &str,
     schema: &str,
     table: &str,
 ) -> Result<PartitionDdl, AppError> {
     let constraints = sqlx::query(
         "SELECT con.conname::text AS name, con.contype::text AS kind, \
-                pg_get_constraintdef(con.oid) AS definition \
+                pg_get_constraintdef(con.oid) AS definition, \
+                (SELECT n.nspname::text FROM pg_catalog.pg_class c \
+                   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                  WHERE c.oid = con.confrelid) AS ref_schema \
          FROM pg_catalog.pg_constraint con \
          WHERE con.conrelid = format('%I.%I', $1, $2)::regclass \
            AND con.coninhcount = 0 AND con.contype IN ('p', 'u', 'c', 'x', 'f', 'n') \
@@ -128,15 +136,18 @@ async fn fetch_partition_own_objects(
         let name: String = try_get_or_warn(row, "name", schema, table);
         let kind: String = try_get_or_warn(row, "kind", schema, table);
         let definition: String = try_get_or_warn(row, "definition", schema, table);
+        let ref_schema: Option<String> = try_get_or_warn(row, "ref_schema", schema, table);
         let statement = format!(
             "ALTER TABLE {target} ADD CONSTRAINT {} {definition};",
             quote_pg_identifier(&name)?
         );
-        // FK 는 참조 대상이 먼저 있어야 하므로 다른 FK 와 함께 파일 끝으로
-        if kind == "f" {
-            ddl.after.push(statement);
-        } else {
-            ddl.create.push(statement);
+        // FK 는 참조 대상이 먼저 있어야 하므로 다른 FK 와 함께 파일 끝으로 (다른 스키마 참조는 별도 파일)
+        match (kind.as_str(), ref_schema) {
+            ("f", Some(ref_schema)) if ref_schema != file_schema => {
+                ddl.cross_schema.push(statement)
+            }
+            ("f", _) => ddl.after.push(statement),
+            _ => ddl.create.push(statement),
         }
     }
     for row in &indexes {

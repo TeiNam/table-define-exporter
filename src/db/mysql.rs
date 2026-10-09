@@ -447,7 +447,7 @@ impl MySqlClient {
             .or_else(|| ddl_column(&row, "Create View"))
             .map(|create| TableDdl {
                 create,
-                after: Vec::new(),
+                ..Default::default()
             })
             .ok_or_else(|| AppError::MetadataQuery {
                 schema: schema.to_string(),
