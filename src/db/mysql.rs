@@ -38,6 +38,16 @@ impl MySqlClient {
         let options = crate::db::connect::mysql_options(config);
         let pool = MySqlPoolOptions::new()
             .max_connections(4)
+            // mysqldump 처럼 세션 sql_mode 를 비우고 식별자 인용을 켠다. 서버 전역 sql_mode 를 물려받으면
+            // ANSI_QUOTES 일 때 SHOW CREATE 가 "t" 처럼 큰따옴표로 나와 일반 서버에서 실행되지 않는다.
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::raw_sql("SET SESSION sql_mode = '', SESSION sql_quote_show_create = 1")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect_with(options)
             .await
             .map_err(|e| AppError::DbConnection {

@@ -271,10 +271,13 @@ fn write_sql(
             }
         }
         // MySQL: 한글 코멘트 등이 깨지지 않게 문자셋을 고정하고, FK 가 뒤에 나오는 테이블을
-        // 참조해도 실행되도록 검사를 잠시 끈다 (mysqldump 와 동일)
+        // 참조해도 실행되도록 검사를 잠시 끈다. SQL_MODE 도 바꿔 실행 서버의 strict 모드가
+        // 레거시 기본값(`DEFAULT '0000-00-00 00:00:00'`)을 거부하지 않게 한다 (mysqldump 와 동일)
         DbType::MySql => writeln!(
             file,
-            "SET NAMES utf8mb4;\nSET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n"
+            "SET NAMES utf8mb4;\n\
+             SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS = 0;\n\
+             SET @OLD_SQL_MODE = @@SQL_MODE, SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';\n"
         )?,
     }
 
@@ -332,6 +335,7 @@ fn write_sql(
     }
     if db_type == DbType::MySql {
         writeln!(file, "SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;")?;
+        writeln!(file, "SET SQL_MODE = @OLD_SQL_MODE;")?;
     }
 
     Ok(())
@@ -534,6 +538,12 @@ mod tests {
             .unwrap();
         assert!(off < create && create < restore, "{out}");
         assert!(!out.contains("/* Foreign Keys */"), "{out}");
+        // SQL_MODE 도 바꿨다가 되돌린다 (zero-date 기본값 등)
+        let mode = out
+            .find("SET @OLD_SQL_MODE = @@SQL_MODE, SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';")
+            .unwrap();
+        let mode_restore = out.find("SET SQL_MODE = @OLD_SQL_MODE;").unwrap();
+        assert!(mode < create && create < mode_restore, "{out}");
     }
 
     #[test]
