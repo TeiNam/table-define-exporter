@@ -81,6 +81,11 @@ struct Cli {
     /// 끝낸다 — 불완전한 출력을 성공으로 넘기면 안 되는 자동화용
     #[arg(long)]
     strict: bool,
+
+    /// SQL 출력에서 MySQL 뷰·루틴의 `DEFINER=` 절을 뺀다 — 원본 정의자 계정이 없거나 권한
+    /// (SET_ANY_DEFINER·SUPER)이 없는 계정으로 실행할 때. 그러면 실행한 계정이 정의자가 된다
+    #[arg(long = "skip-definer")]
+    skip_definer: bool,
 }
 
 impl Cli {
@@ -99,6 +104,7 @@ impl Cli {
             target_db: self.target_db,
             except_tables: self.except_tables,
             tls: TlsOptions::new(self.ssl_mode, self.ssl_ca)?,
+            skip_definer: self.skip_definer,
         })
     }
 }

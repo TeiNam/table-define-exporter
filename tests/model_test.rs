@@ -92,6 +92,7 @@ proptest! {
             db_type: td_export::model::DbType::MySql,
             database: None,
             tls: Default::default(),
+            skip_definer: false,
         };
         let debug_output = format!("{:?}", config);
         // "password: \"<실제값>\"" 형태로 노출되지 않아야 함
@@ -122,6 +123,7 @@ proptest! {
             db_type: td_export::model::DbType::MySql,
             database: None,
             tls: Default::default(),
+            skip_definer: false,
         };
         let debug_str = format!("{:?}", config);
         // password 필드 값이 [REDACTED]로 대체되었는지 확인
@@ -149,6 +151,7 @@ fn run_config_debug_redacts_password() {
         db_type: td_export::model::DbType::MySql,
         database: None,
         tls: Default::default(),
+        skip_definer: false,
     };
     let debug_str = format!("{:?}", config);
     assert!(!debug_str.contains("super_secret_password"));
@@ -344,6 +347,7 @@ fn run_config_debug_includes_db_type_and_database() {
         db_type: DbType::Postgres,
         database: Some("mydb".to_string()),
         tls: Default::default(),
+        skip_definer: false,
     };
     let debug_str = format!("{:?}", config);
     assert!(debug_str.contains("db_type: Postgres"));

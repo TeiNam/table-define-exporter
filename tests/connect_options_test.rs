@@ -97,6 +97,7 @@ fn run_config_strategy() -> impl Strategy<Value = RunConfig> {
                 db_type,
                 database,
                 tls: Default::default(),
+                skip_definer: false,
             },
         )
 }
@@ -144,6 +145,7 @@ fn mysql_options_accepts_password_with_url_reserved_chars() {
         db_type: DbType::MySql,
         database: None,
         tls: Default::default(),
+        skip_definer: false,
     };
     // 패닉 없이 반환되면 성공.
     let _opts = mysql_options(&cfg);
@@ -163,6 +165,7 @@ fn pg_options_accepts_password_with_url_reserved_chars() {
         db_type: DbType::Postgres,
         database: Some("app".to_string()),
         tls: Default::default(),
+        skip_definer: false,
     };
     let _opts = pg_options(&cfg);
 }
@@ -249,6 +252,7 @@ fn ssl_mode_maps_to_driver_modes_and_ca_requires_verify_mode() {
         db_type: DbType::Postgres,
         database: None,
         tls: TlsOptions::new(Some(mode), None).unwrap(),
+        skip_definer: false,
     };
     assert!(matches!(
         mysql_options(&cfg(SslMode::Prefer)).get_ssl_mode(),
@@ -273,6 +277,7 @@ fn ssl_mode_maps_to_driver_modes_and_ca_requires_verify_mode() {
     // 미지정이면 드라이버 기본값을 건드리지 않는다 (PostgreSQL 은 PGSSLMODE 환경변수가 그대로 적용)
     let unset = RunConfig {
         tls: TlsOptions::default(),
+        skip_definer: false,
         ..cfg(SslMode::Require)
     };
     assert!(TlsOptions::default().mode.is_none());

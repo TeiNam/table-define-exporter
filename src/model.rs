@@ -162,6 +162,8 @@ pub struct RunConfig {
     pub database: Option<String>,
     /// TLS 접속 방식과 CA 인증서
     pub tls: TlsOptions,
+    /// SQL 출력에서 MySQL 뷰·루틴의 `DEFINER=` 절을 뺀다 (다른 계정으로 실행할 때)
+    pub skip_definer: bool,
 }
 
 /// Debug 구현. password 필드는 `Password` 타입 자체의 `Debug`가
@@ -179,6 +181,7 @@ impl std::fmt::Debug for RunConfig {
             .field("db_type", &self.db_type)
             .field("database", &self.database)
             .field("tls", &self.tls)
+            .field("skip_definer", &self.skip_definer)
             .finish()
     }
 }

@@ -19,6 +19,8 @@ pub struct MySqlClient {
     has_index_expression: bool,
     /// MariaDB 는 `COLUMN_DEFAULT` 를 이미 SQL 리터럴(`'abc'`, `NULL`)로 돌려준다.
     is_mariadb: bool,
+    /// `--skip-definer`: SQL 출력용 뷰·루틴 정의에서 `DEFINER=` 절을 뺀다
+    skip_definer: bool,
 }
 
 const SYSTEM_SCHEMAS: &[&str] = &[
@@ -95,6 +97,7 @@ impl MySqlClient {
             pool,
             has_index_expression,
             is_mariadb,
+            skip_definer: config.skip_definer,
         })
     }
 
@@ -453,8 +456,10 @@ impl MySqlClient {
         let row = self.show_create(schema, table).await?;
         // 연결 charset에 따라 `Create Table`이 binary로 올 수 있어 ddl_column으로 복원.
         // VIEW면 `Create Table` 컬럼이 없고 `Create View`가 온다 — 그쪽으로 폴백.
-        ddl_column(&row, "Create Table")
-            .or_else(|| ddl_column(&row, "Create View"))
+        let create = ddl_column(&row, "Create Table").or_else(|| {
+            ddl_column(&row, "Create View").map(|view| self.definer_policy(schema, table, view))
+        });
+        create
             .map(|create| TableDdl {
                 create,
                 ..Default::default()
@@ -464,6 +469,17 @@ impl MySqlClient {
                 table: table.to_string(),
                 source: sqlx::Error::RowNotFound,
             })
+    }
+
+    /// `--skip-definer` 면 뷰·루틴 정의에서 `DEFINER=` 절을 뺀다. 형식이 예상과 달라 못 빼면 경고 후 그대로.
+    fn definer_policy(&self, schema: &str, name: &str, ddl: String) -> String {
+        if !self.skip_definer {
+            return ddl;
+        }
+        without_definer(&ddl).unwrap_or_else(|| {
+            tracing::warn!("{schema}.{name}: DEFINER 절을 찾지 못해 그대로 출력");
+            ddl
+        })
     }
 
     /// `SHOW CREATE TABLE schema.table` 결과 행. 이름은 백틱 인용 + 위험 문자 거부.
@@ -495,6 +511,35 @@ impl MySqlClient {
         .fetch_one(&mut *conn)
         .await
         .map_err(query_error)
+    }
+}
+
+/// `CREATE [ALGORITHM=..] DEFINER=`user`@`host` ..` 에서 `DEFINER=..` 를 뺀다 (SHOW CREATE VIEW·
+/// FUNCTION·PROCEDURE 머리말). 정의자가 빠지면 실행한 계정이 정의자가 된다 (mysqlpump --skip-definer).
+fn without_definer(ddl: &str) -> Option<String> {
+    let rest = ddl.strip_prefix("CREATE ")?;
+    let (algorithm, rest) = match rest.strip_prefix("ALGORITHM=") {
+        Some(after) => {
+            let (algorithm, after) = after.split_once(' ')?;
+            (format!("ALGORITHM={algorithm} "), after)
+        }
+        None => (String::new(), rest),
+    };
+    let rest = rest.strip_prefix("DEFINER=")?;
+    let rest = skip_backtick_identifier(rest)?.strip_prefix('@')?;
+    let rest = skip_backtick_identifier(rest)?.strip_prefix(' ')?;
+    Some(format!("CREATE {algorithm}{rest}"))
+}
+
+/// `` `name` `` 하나를 건너뛴 나머지 (`` `` `` 는 이름 속 백틱)
+fn skip_backtick_identifier(s: &str) -> Option<&str> {
+    let mut rest = s.strip_prefix('`')?;
+    loop {
+        let end = rest.find('`')?;
+        match rest[end + 1..].strip_prefix('`') {
+            Some(after) => rest = after,
+            None => return Some(&rest[end + 1..]),
+        }
     }
 }
 
@@ -641,6 +686,28 @@ pub(crate) fn filter_schemas(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn definer_clause_is_removed_from_view_and_routine_headers() {
+        assert_eq!(
+            without_definer(
+                "CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`localhost` SQL SECURITY DEFINER VIEW `v` AS select 1 AS `DEFINER=`"
+            )
+            .as_deref(),
+            Some("CREATE ALGORITHM=UNDEFINED SQL SECURITY DEFINER VIEW `v` AS select 1 AS `DEFINER=`")
+        );
+        assert_eq!(
+            without_definer("CREATE DEFINER=`a``b`@`%` FUNCTION `f`() RETURNS int RETURN 1")
+                .as_deref(),
+            Some("CREATE FUNCTION `f`() RETURNS int RETURN 1")
+        );
+        // 형식이 다르면 None (호출부가 경고 후 그대로 둔다)
+        assert_eq!(without_definer("CREATE VIEW `v` AS select 1"), None);
+        assert_eq!(
+            without_definer("CREATE DEFINER=root@localhost VIEW v"),
+            None
+        );
+    }
 
     #[test]
     fn quote_literal_default_distinguishes_string_literals() {

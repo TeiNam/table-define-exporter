@@ -22,6 +22,8 @@ pub struct CliOverrides {
     pub except_tables: Option<Vec<String>>,
     /// TLS 설정 — 대화형으로 묻지 않고 CLI 플래그(기본 prefer)로만 받는다
     pub tls: TlsOptions,
+    /// `--skip-definer` (대화형으로 묻지 않음)
+    pub skip_definer: bool,
 }
 
 /// 프롬프트를 출력하고 stdin에서 한 줄을 읽어 반환합니다.
@@ -239,6 +241,7 @@ pub fn load_config(overrides: CliOverrides) -> Result<RunConfig, AppError> {
         db_type,
         database,
         tls: overrides.tls,
+        skip_definer: overrides.skip_definer,
     })
 }
 

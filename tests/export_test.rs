@@ -145,6 +145,7 @@ fn source_label_distinguishes_port_and_database() {
         db_type,
         database: database.map(str::to_string),
         tls: Default::default(),
+        skip_definer: false,
     };
     // 기본 포트면 기존 파일명({endpoint}) 그대로
     assert_eq!(source_label(&config(DbType::MySql, 3306, None)), "db.local");
@@ -557,6 +558,7 @@ proptest! {
             db_type: td_export::model::DbType::MySql,
             database: None,
             tls: Default::default(),
+            skip_definer: false,
         };
 
         let mut exporter = create_exporter(OutputFormat::Excel);

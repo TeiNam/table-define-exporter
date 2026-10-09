@@ -48,6 +48,7 @@ use crate::model::{RunConfig, SslMode};
 ///     db_type: DbType::MySql,
 ///     database: None,
 ///     tls: Default::default(),
+///     skip_definer: false,
 /// };
 /// let _options = mysql_options(&cfg);
 /// ```
@@ -97,6 +98,7 @@ pub fn mysql_options(config: &RunConfig) -> MySqlConnectOptions {
 ///     db_type: DbType::Postgres,
 ///     database: Some("app".to_string()),
 ///     tls: Default::default(),
+///     skip_definer: false,
 /// };
 /// let _options = pg_options(&cfg);
 /// ```
