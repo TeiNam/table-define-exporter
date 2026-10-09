@@ -6,7 +6,7 @@
 
 use crate::{error::AppError, identifier::quote_pg_identifier, model::TableDdl};
 
-use super::parse::{extract_check_expression, quote_column_list, without_on_only};
+use super::parse::{extract_check_expression, quote_column_list};
 use super::types::{
     PgConstraintType, PgDdlColumn, PgDdlConstraint, PgGenerated, PgIdentity, PgIdentitySequence,
 };
@@ -561,27 +561,24 @@ pub(super) async fn fetch_table_ddl(
     // 2. 제약 조건 조회 (pg_constraint)
     let ddl_constraints = fetch_constraints(pool, schema, table).await?;
 
-    // 3. 인덱스 정의 조회 (PK/UQ/EXCLUDE 제약 조건 인덱스 제외)
-    let index_defs = fetch_index_defs(pool, schema, table).await?;
+    // 3. 인덱스 정의 조회 (PK/UQ/EXCLUDE 제약 조건 인덱스 제외). 파티션 부모의 인덱스는 하위
+    //    파티션 인덱스와 함께 파티션을 모두 만든 뒤에 만든다 (partition::fetch_partitions_ddl)
+    let index_defs = match partition_key {
+        Some(_) => Vec::new(),
+        None => fetch_index_defs(pool, schema, table).await?,
+    };
 
     // 4. DDL 재구성 — serial 시퀀스(스키마 파일 앞에서 생성)의 소유 관계는 테이블 직후에 복원
     let options = TableOptions {
         partition_key: partition_key.as_deref(),
         foreign: foreign.as_deref(),
     };
-    // 파티션 부모의 인덱스는 하위 파티션(과 그 자체 인덱스)을 다 만든 뒤에 만든다 — 먼저 만들면
-    // PARTITION OF 가 상속 인덱스를 자동 이름(c1_id_idx)으로 만들어, 원본에서 그 이름을 쓰는 하위
-    // 파티션 자체 인덱스와 충돌한다. 뒤에 만들면 상속 인덱스 쪽이 겹치지 않는 이름을 고른다.
-    let (table_indexes, parent_indexes) = match partition_key {
-        Some(_) => (Vec::new(), index_defs),
-        None => (index_defs, Vec::new()),
-    };
     let mut create = build_table_ddl(
         schema,
         table,
         &ddl_columns,
         &ddl_constraints,
-        &table_indexes,
+        &index_defs,
         &options,
     )?;
     if foreign.is_some() {
@@ -604,12 +601,7 @@ pub(super) async fn fetch_table_ddl(
         append_statements(&mut create, &partitions.create);
         after.extend(partitions.after);
         cross_schema.extend(partitions.cross_schema);
-        // pg_get_indexdef 는 파티션 부모 인덱스를 `ON ONLY` 로 돌려준다 — 하위 파티션에 전파되게 `ON` 으로
-        let parent_indexes: Vec<String> = parent_indexes
-            .iter()
-            .map(|def| format!("{};", without_on_only(def)))
-            .collect();
-        append_statements(&mut create, &parent_indexes);
+        append_statements(&mut create, &partitions.indexes);
     }
     let ownership = super::schema_ddl::fetch_sequence_ownership(pool, schema, table).await?;
     append_statements(&mut create, &ownership);
