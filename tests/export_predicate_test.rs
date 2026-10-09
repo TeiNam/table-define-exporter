@@ -79,6 +79,7 @@ fn make_run_config() -> RunConfig {
         db_type: DbType::MySql,
         database: None,
         tls: Default::default(),
+        skip_definer: false,
     }
 }
 

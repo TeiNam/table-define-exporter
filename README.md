@@ -81,6 +81,7 @@ cargo build --release
 | `--ssl-mode` | `prefer` (PostgreSQL은 `PGSSLMODE` 환경변수가 있으면 그 값) | TLS: `disable`, `prefer`, `require`, `verify-ca`, `verify-full` ([TLS](#지원-데이터베이스) 참고) |
 | `--ssl-ca` | — | 서버 인증서를 검증할 CA 인증서(PEM) — `verify-ca`/`verify-full`과 함께 사용 |
 | `--strict` | — | 경고(건너뛴 객체·조회 실패)가 하나라도 있으면 출력은 그대로 두고 종료 코드 1로 끝냄 (자동화용) |
+| `--skip-definer` | — | SQL 출력에서 MySQL 뷰·루틴의 `DEFINER=` 절을 뺌 — 다른 계정으로 실행할 때 (실행한 계정이 정의자가 됨) |
 | `--help` | — | 도움말 |
 | `--version` | — | 버전 정보 |
 
@@ -154,10 +155,7 @@ RUST_LOG=debug ./td-export
   for f in *.cross-schema-fk.sql; do psql -v ON_ERROR_STOP=1 -f "$f"; done
   ```
 - 뷰는 참조하는 테이블보다 늦게 만들어지도록 모든 테이블 뒤에 출력합니다. MySQL 뷰는 mysqldump처럼 DB 이름 없이 출력하므로, 실행할 DB를 먼저 선택(`USE`)하면 이름이 다른 DB에도 그대로 만들어집니다.
-- MySQL 뷰의 `DEFINER=` 절도 mysqldump처럼 그대로 둡니다. 다른 계정(예: RDS 마스터 사용자)으로 실행하면 `SET_ANY_DEFINER`(8.0은 `SET_USER_ID`)나 `SUPER` 권한이 없을 때 `ERROR 1227`이 나므로, 그때는 `DEFINER=` 절을 지우고 실행하세요.
-  ```bash
-  sed -E 's/DEFINER=`[^`]*`@`[^`]*` //' 'mydb(db.local).sql' | mysql mydb
-  ```
+- MySQL 뷰의 `DEFINER=` 절은 기본적으로 mysqldump처럼 그대로 둡니다. 다른 계정(예: RDS 마스터 사용자)으로 실행하면 `SET_ANY_DEFINER`(8.0은 `SET_USER_ID`)나 `SUPER` 권한이 없을 때 `ERROR 1227`이 나므로, 그때는 `--skip-definer`로 내보내세요 (실행한 계정이 정의자가 됩니다).
 - 테이블·뷰 정의서 도구라 함수·프로시저·트리거·이벤트·권한과 PostgreSQL 확장(extension)은 출력하지 않습니다. `citext` 같은 확장 타입(`public.citext`처럼 스키마로 한정돼 출력)이나 btree_gist가 필요한 EXCLUDE 제약, 사용자 함수를 쓰는 기본값·CHECK가 있으면 실행 전에 그 확장·함수를 먼저 만들어 두세요.
 - PostgreSQL 파일은 pg_dump처럼 `client_encoding`·`standard_conforming_strings`·`search_path`(빈 값 — 이름이 모두 스키마로 한정돼 있음)를 고정하고 `CREATE SCHEMA IF NOT EXISTS`로 시작합니다. 테이블이 참조하는 사용자 타입(enum·도메인·복합·range 타입, 의존 순서)과 시퀀스 생성문을 파일 맨 앞 `/* Types & Sequences */`에 출력하고, 코멘트는 `COMMENT ON` 문으로 붙입니다. 파티션 테이블은 부모 DDL 뒤에 `PARTITION OF`로 하위 파티션을 이어 붙이고, 머티리얼라이즈드 뷰는 `WITH NO DATA`(데이터는 `REFRESH`로 채움), 외부 테이블은 `CREATE FOREIGN TABLE ... SERVER ...`(컬럼 옵션은 `ALTER FOREIGN TABLE ... ALTER COLUMN ... OPTIONS`)로 출력합니다 (`CREATE SERVER`·USER MAPPING은 출력하지 않으므로 실행 전에 같은 이름의 서버가 있어야 합니다). 컬럼의 `COLLATE`와 PostgreSQL 18의 NOT NULL 제약 이름·`NO INHERIT`도 보존합니다.
 
