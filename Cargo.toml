@@ -1,6 +1,6 @@
 [package]
 name = "td-export"
-version = "0.1.52"
+version = "0.1.53"
 edition = "2024"
 rust-version = "1.94"
 
