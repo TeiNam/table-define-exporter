@@ -76,6 +76,8 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
                      THEN format('%I.%I', cn.nspname, co.collname) END AS collation, \
                 pg_get_expr(t.typdefaultbin, 'pg_catalog.pg_type'::regclass) AS default_value, \
                 t.typnotnull AS not_null, \
+                (SELECT c.conname::text FROM pg_catalog.pg_constraint c \
+                  WHERE c.contypid = t.oid AND c.contype = 'n' LIMIT 1) AS not_null_name, \
                 (SELECT array_agg(c.conname::text ORDER BY c.conname) \
                    FROM pg_catalog.pg_constraint c \
                   WHERE c.contypid = t.oid AND c.contype = 'c') AS check_names, \
@@ -100,6 +102,7 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
         let collation: Option<String> = try_get_or_warn(row, "collation", schema, LABEL);
         let default_value: Option<String> = try_get_or_warn(row, "default_value", schema, LABEL);
         let not_null: bool = try_get_or_warn(row, "not_null", schema, LABEL);
+        let not_null_name: Option<String> = try_get_or_warn(row, "not_null_name", schema, LABEL);
         let check_names: Option<Vec<String>> = try_get_or_warn(row, "check_names", schema, LABEL);
         let check_defs: Option<Vec<String>> = try_get_or_warn(row, "check_defs", schema, LABEL);
         let checks: Vec<(String, String)> = check_names
@@ -112,6 +115,7 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
             collation: collation.as_deref(),
             default_value: default_value.as_deref(),
             not_null,
+            not_null_name: not_null_name.as_deref(),
             checks: &checks,
         };
         add_type(
@@ -171,10 +175,15 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
     let ranges = sqlx::query(
         "SELECT t.oid::int8 AS oid, t.typname::text AS name, \
                 format_type(r.rngsubtype, NULL) AS subtype, \
+                CASE WHEN r.rngcollation <> 0 AND r.rngcollation <> st.typcollation \
+                     THEN format('%I.%I', cn.nspname, co.collname) END AS collation, \
                 mn.nspname::text AS multirange_schema, mt.typname::text AS multirange_name \
          FROM pg_catalog.pg_type t \
          JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
          JOIN pg_catalog.pg_range r ON r.rngtypid = t.oid \
+         JOIN pg_catalog.pg_type st ON st.oid = r.rngsubtype \
+         LEFT JOIN pg_catalog.pg_collation co ON co.oid = r.rngcollation \
+         LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = co.collnamespace \
          LEFT JOIN pg_catalog.pg_type mt ON mt.oid = (to_jsonb(r) ->> 'rngmultitypid')::oid \
          LEFT JOIN pg_catalog.pg_namespace mn ON mn.oid = mt.typnamespace \
          WHERE n.nspname = $1 AND t.typtype = 'r'",
@@ -187,10 +196,17 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
         let oid: i64 = try_get_or_warn(row, "oid", schema, LABEL);
         let name: String = try_get_or_warn(row, "name", schema, LABEL);
         let subtype: String = try_get_or_warn(row, "subtype", schema, LABEL);
+        let collation: Option<String> = try_get_or_warn(row, "collation", schema, LABEL);
         let mr_schema: Option<String> = try_get_or_warn(row, "multirange_schema", schema, LABEL);
         let mr_name: Option<String> = try_get_or_warn(row, "multirange_name", schema, LABEL);
         let multirange = mr_schema.zip(mr_name);
-        let ddl = build_range_ddl(schema, &name, &subtype, multirange.as_ref());
+        let ddl = build_range_ddl(
+            schema,
+            &name,
+            &subtype,
+            collation.as_deref(),
+            multirange.as_ref(),
+        );
         add_type(oid, "range type", &name, ddl);
     }
 
@@ -376,6 +392,8 @@ struct DomainDef<'a> {
     collation: Option<&'a str>,
     default_value: Option<&'a str>,
     not_null: bool,
+    /// PG 17+ 의 도메인 NOT NULL 제약 이름 (그 전 버전은 `None`)
+    not_null_name: Option<&'a str>,
     checks: &'a [(String, String)],
 }
 
@@ -391,7 +409,16 @@ fn build_domain_ddl(schema: &str, name: &str, domain: &DomainDef) -> Result<Stri
         ddl.push_str(&format!(" DEFAULT {default}"));
     }
     if domain.not_null {
-        ddl.push_str(" NOT NULL");
+        // 기본 이름(`{domain}_not_null`)이 아니면 이름을 살린다 (PG 16 이하도 받는 문법)
+        match domain.not_null_name {
+            Some(nn) if nn != format!("{name}_not_null") => {
+                ddl.push_str(&format!(
+                    " CONSTRAINT {} NOT NULL",
+                    quote_pg_identifier(nn)?
+                ));
+            }
+            _ => ddl.push_str(" NOT NULL"),
+        }
     }
     let mut not_valid = Vec::new();
     for (check_name, definition) in domain.checks {
@@ -413,13 +440,18 @@ fn build_domain_ddl(schema: &str, name: &str, domain: &DomainDef) -> Result<Stri
     Ok(ddl)
 }
 
-/// `CREATE TYPE "s"."r" AS RANGE (SUBTYPE = .. [, MULTIRANGE_TYPE_NAME = "s"."rm"]);`
+/// `CREATE TYPE "s"."r" AS RANGE (SUBTYPE = ..[, COLLATION = ..][, MULTIRANGE_TYPE_NAME = "s"."rm"]);`
+/// COLLATION 은 subtype 의 기본값과 다를 때만 — 빠지면 범위 경계의 비교 의미가 바뀐다.
 fn build_range_ddl(
     schema: &str,
     name: &str,
     subtype: &str,
+    collation: Option<&str>,
     multirange: Option<&(String, String)>,
 ) -> Result<String, AppError> {
+    let collation = collation
+        .map(|c| format!(", COLLATION = {c}"))
+        .unwrap_or_default();
     let multirange = match multirange {
         Some((mr_schema, mr_name)) => {
             format!(
@@ -430,7 +462,7 @@ fn build_range_ddl(
         None => String::new(),
     };
     Ok(format!(
-        "CREATE TYPE {} AS RANGE (SUBTYPE = {subtype}{multirange});",
+        "CREATE TYPE {} AS RANGE (SUBTYPE = {subtype}{collation}{multirange});",
         qualified(schema, name)?
     ))
 }
@@ -497,6 +529,7 @@ mod tests {
             collation: None,
             default_value: Some("1"),
             not_null: true,
+            not_null_name: None,
             checks: &checks,
         };
         assert_eq!(
@@ -533,11 +566,33 @@ mod tests {
             collation: Some("pg_catalog.\"C\""),
             default_value: None,
             not_null: false,
+            not_null_name: None,
             checks: &[],
         };
         assert_eq!(
             build_domain_ddl("a", "code", &collated).unwrap(),
             r#"CREATE DOMAIN "a"."code" AS text COLLATE pg_catalog."C";"#
+        );
+        // 기본이 아닌 NOT NULL 제약 이름은 보존, 기본 이름은 생략
+        let named = DomainDef {
+            base_type: "integer",
+            collation: None,
+            default_value: None,
+            not_null: true,
+            not_null_name: Some("must"),
+            checks: &[],
+        };
+        assert_eq!(
+            build_domain_ddl("a", "nn", &named).unwrap(),
+            r#"CREATE DOMAIN "a"."nn" AS integer CONSTRAINT "must" NOT NULL;"#
+        );
+        let default_named = DomainDef {
+            not_null_name: Some("nn_not_null"),
+            ..named
+        };
+        assert_eq!(
+            build_domain_ddl("a", "nn", &default_named).unwrap(),
+            r#"CREATE DOMAIN "a"."nn" AS integer NOT NULL;"#
         );
         // NOT VALID CHECK 는 CREATE DOMAIN 뒤 ALTER DOMAIN 으로 (CREATE DOMAIN 에 쓰면 구문 오류)
         let not_valid = [
@@ -552,6 +607,7 @@ mod tests {
             collation: None,
             default_value: None,
             not_null: false,
+            not_null_name: None,
             checks: &not_valid,
         };
         assert_eq!(
@@ -568,10 +624,15 @@ mod tests {
                 "a",
                 "price_range",
                 "numeric",
+                None,
                 Some(&("a".into(), "price_multirange".into()))
             )
             .unwrap(),
             r#"CREATE TYPE "a"."price_range" AS RANGE (SUBTYPE = numeric, MULTIRANGE_TYPE_NAME = "a"."price_multirange");"#
+        );
+        assert_eq!(
+            build_range_ddl("a", "tr", "text", Some(r#"pg_catalog."C""#), None).unwrap(),
+            r#"CREATE TYPE "a"."tr" AS RANGE (SUBTYPE = text, COLLATION = pg_catalog."C");"#
         );
         // 위험 식별자는 거부
         assert!(build_enum_ddl("a;b", "mood", &[]).is_err());
