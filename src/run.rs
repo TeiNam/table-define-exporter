@@ -67,9 +67,10 @@ struct Cli {
     except_tables: Option<Vec<String>>,
 
     /// TLS 접속 방식 — prefer·require 는 서버 인증서를 검증하지 않고, verify-ca 는 CA 서명,
-    /// verify-full 은 CA 서명과 호스트 이름까지 검증. TLS 1.2 미지원 구형 서버는 disable
-    #[arg(long = "ssl-mode", value_name = "MODE", value_enum, default_value_t = SslMode::Prefer)]
-    ssl_mode: SslMode,
+    /// verify-full 은 CA 서명과 호스트 이름까지 검증. TLS 1.2 미지원 구형 서버는 disable.
+    /// 미지정 시 prefer (PostgreSQL 은 PGSSLMODE 환경변수가 있으면 그 값)
+    #[arg(long = "ssl-mode", value_name = "MODE", value_enum)]
+    ssl_mode: Option<SslMode>,
 
     /// 서버 인증서를 검증할 CA 인증서 파일(PEM) — verify-ca / verify-full 과 함께 사용
     /// (미지정 시 공개 루트 인증서로 검증)
