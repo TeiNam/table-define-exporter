@@ -156,8 +156,10 @@ RUST_LOG=debug ./td-export
   ```
 - 뷰는 참조하는 테이블보다 늦게 만들어지도록 모든 테이블 뒤에 출력합니다. MySQL 뷰는 mysqldump처럼 DB 이름 없이 출력하므로, 실행할 DB를 먼저 선택(`USE`)하면 이름이 다른 DB에도 그대로 만들어집니다.
 - MySQL 뷰의 `DEFINER=` 절은 기본적으로 mysqldump처럼 그대로 둡니다. 다른 계정(예: RDS 마스터 사용자)으로 실행하면 `SET_ANY_DEFINER`(8.0은 `SET_USER_ID`)나 `SUPER` 권한이 없을 때 `ERROR 1227`이 나므로, 그때는 `--skip-definer`로 내보내세요 (실행한 계정이 정의자가 됩니다).
-- 테이블·뷰 정의서 도구라 함수·프로시저·트리거·이벤트·권한과 PostgreSQL 확장(extension)은 출력하지 않습니다. `citext` 같은 확장 타입(`public.citext`처럼 스키마로 한정돼 출력)이나 btree_gist가 필요한 EXCLUDE 제약, 사용자 함수를 쓰는 기본값·CHECK가 있으면 실행 전에 그 확장·함수를 먼저 만들어 두세요.
-- PostgreSQL 파일은 pg_dump처럼 `client_encoding`·`standard_conforming_strings`·`search_path`(빈 값 — 이름이 모두 스키마로 한정돼 있음)를 고정하고 `CREATE SCHEMA IF NOT EXISTS`로 시작합니다. 테이블이 참조하는 사용자 타입(enum·도메인·복합·range 타입, 의존 순서)과 시퀀스 생성문을 파일 맨 앞 `/* Types & Sequences */`에 출력하고, 코멘트는 `COMMENT ON` 문으로 붙입니다. 파티션 테이블은 부모 DDL 뒤에 `PARTITION OF`로 하위 파티션을 이어 붙이고, 머티리얼라이즈드 뷰는 `WITH NO DATA`(데이터는 `REFRESH`로 채움), 외부 테이블은 `CREATE FOREIGN TABLE ... SERVER ...`(컬럼 옵션은 `ALTER FOREIGN TABLE ... ALTER COLUMN ... OPTIONS`)로 출력합니다 (`CREATE SERVER`·USER MAPPING은 출력하지 않으므로 실행 전에 같은 이름의 서버가 있어야 합니다). 컬럼의 `COLLATE`와 PostgreSQL 18의 NOT NULL 제약 이름·`NO INHERIT`도 보존합니다.
+- 테이블이 쓰는 함수·확장도 출력합니다 — 트리거·이벤트·집계 함수·권한은 출력하지 않습니다.
+  - PostgreSQL: 스키마에 설치됐거나 스키마의 객체(컬럼 타입·기본값·제약·인덱스 연산자 클래스·뷰·함수)가 쓰는 확장을 `CREATE EXTENSION IF NOT EXISTS ... WITH SCHEMA ... CASCADE`로 냅니다 (확장에 속한 타입·함수·테이블은 `CREATE EXTENSION`이 만들므로 따로 내지 않음). 확장이 실행할 DB에 없으면 확장을 만들 권한(슈퍼유저 또는 trusted 확장)이 필요합니다. 함수·프로시저는 타입과 함께 의존 순서로 테이블 앞에, 테이블 행 타입을 쓰는 함수(`RETURNS SETOF 테이블` 등)는 테이블 뒤·뷰 앞(`/* Functions using table row types */`)에 둡니다.
+  - MySQL: 함수·프로시저를 mysqldump처럼 `DELIMITER ;;`로 감싸고, 루틴이 만들어질 때의 `sql_mode`로 다시 만듭니다 (`--skip-definer`도 적용). 바이너리 로그가 켜진 서버에서는 `SUPER` 권한이나 `log_bin_trust_function_creators=1`이 있어야 함수를 만들 수 있습니다 (mysqldump와 동일).
+- PostgreSQL 파일은 pg_dump처럼 `client_encoding`·`standard_conforming_strings`·`search_path`(빈 값 — 이름이 모두 스키마로 한정돼 있음)·`check_function_bodies`(끔 — 함수 본문이 뒤에 만들 테이블을 참조할 수 있음)를 고정하고 `CREATE SCHEMA IF NOT EXISTS`로 시작합니다. 테이블이 참조하는 사용자 타입(enum·도메인·복합·range 타입, 의존 순서)과 시퀀스 생성문을 파일 맨 앞 `/* Extensions, Types, Sequences & Functions */`에 출력하고, 코멘트는 `COMMENT ON` 문으로 붙입니다. 파티션 테이블은 부모 DDL 뒤에 `PARTITION OF`로 하위 파티션을 이어 붙이고, 머티리얼라이즈드 뷰는 `WITH NO DATA`(데이터는 `REFRESH`로 채움), 외부 테이블은 `CREATE FOREIGN TABLE ... SERVER ...`(컬럼 옵션은 `ALTER FOREIGN TABLE ... ALTER COLUMN ... OPTIONS`)로 출력합니다 (`CREATE SERVER`·USER MAPPING은 출력하지 않으므로 실행 전에 같은 이름의 서버가 있어야 합니다). 컬럼의 `COLLATE`와 PostgreSQL 18의 NOT NULL 제약 이름·`NO INHERIT`도 보존합니다.
 
 ## 지원 데이터베이스
 
@@ -254,7 +256,7 @@ cargo audit                                             # 4. 보안 감사
 - Markdown 셀 이스케이프 (`|`·줄바꿈·`\`·`` ` ``·`*`·`<`·`](`) — 위 Markdown 절 참고
 - 인덱스: 종류(`[Unique]` `[Fulltext]` `[Spatial]`)를 구분하고, 컬럼에 `DESC`·prefix 길이·함수식을 남기며 긴 인덱스도 잘리지 않습니다. 다중 컬럼 FK는 한 줄로, 다른 스키마를 참조하면 `schema.table`로 표시합니다
 - Excel 시트 이름: 31자·금지 문자·대소문자만 다른 중복을 규칙에 맞게 정리
-- SQL: `DROP TABLE IF EXISTS` 없이 CREATE 만 출력하고, 헤더에서 문자셋·`FOREIGN_KEY_CHECKS`·`SQL_MODE`를 고정했다가 되돌립니다. 뷰는 테이블 뒤에 참조 순서대로, DB 이름 없이 출력하고, 조회에 실패한 테이블은 빈 `;` 대신 실패 표시 주석을 남깁니다
+- SQL: `DROP TABLE IF EXISTS` 없이 CREATE 만 출력하고, 헤더에서 문자셋·`FOREIGN_KEY_CHECKS`·`SQL_MODE`를 고정했다가 되돌립니다. 뷰는 테이블 뒤에 참조 순서대로, DB 이름 없이 출력하고, 조회에 실패한 테이블은 빈 `;` 대신 실패 표시 주석을 남깁니다 MySQL 함수·프로시저도 테이블 앞 `/* Routines */`에 출력합니다
 
 의도적 오타(`Referance`)는 `Reference`로 수정되었습니다. 기존 Go 버전 출력물과 이 필드 라벨이 다릅니다.
 

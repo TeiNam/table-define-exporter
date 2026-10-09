@@ -11,6 +11,8 @@ use crate::{
     },
 };
 
+mod routines;
+
 /// MySQL 전용 DB 클라이언트
 pub struct MySqlClient {
     pool: sqlx::MySqlPool,
@@ -526,17 +528,19 @@ fn without_definer(ddl: &str) -> Option<String> {
         None => (String::new(), rest),
     };
     let rest = rest.strip_prefix("DEFINER=")?;
-    let rest = skip_backtick_identifier(rest)?.strip_prefix('@')?;
-    let rest = skip_backtick_identifier(rest)?.strip_prefix(' ')?;
+    let rest = skip_quoted_identifier(rest)?.strip_prefix('@')?;
+    let rest = skip_quoted_identifier(rest)?.strip_prefix(' ')?;
     Some(format!("CREATE {algorithm}{rest}"))
 }
 
-/// `` `name` `` 하나를 건너뛴 나머지 (`` `` `` 는 이름 속 백틱)
-fn skip_backtick_identifier(s: &str) -> Option<&str> {
-    let mut rest = s.strip_prefix('`')?;
+/// `` `name` `` 하나를 건너뛴 나머지. ANSI_QUOTES 로 만든 루틴은 SHOW CREATE 가 `"name"` 으로 돌려준다
+/// (따옴표 두 개는 이름 속 따옴표).
+fn skip_quoted_identifier(s: &str) -> Option<&str> {
+    let quote = s.chars().next().filter(|c| matches!(c, '`' | '"'))?;
+    let mut rest = &s[1..];
     loop {
-        let end = rest.find('`')?;
-        match rest[end + 1..].strip_prefix('`') {
+        let end = rest.find(quote)?;
+        match rest[end + 1..].strip_prefix(quote) {
             Some(after) => rest = after,
             None => return Some(&rest[end + 1..]),
         }
@@ -700,6 +704,12 @@ mod tests {
             without_definer("CREATE DEFINER=`a``b`@`%` FUNCTION `f`() RETURNS int RETURN 1")
                 .as_deref(),
             Some("CREATE FUNCTION `f`() RETURNS int RETURN 1")
+        );
+        // ANSI_QUOTES 로 만든 루틴
+        assert_eq!(
+            without_definer(r#"CREATE DEFINER="root"@"localhost" FUNCTION "f"() RETURNS int"#)
+                .as_deref(),
+            Some(r#"CREATE FUNCTION "f"() RETURNS int"#)
         );
         // 형식이 다르면 None (호출부가 경고 후 그대로 둔다)
         assert_eq!(without_definer("CREATE VIEW `v` AS select 1"), None);

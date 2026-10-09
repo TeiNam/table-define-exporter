@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use crate::{
     error::AppError,
     model::{
-        ColumnInfo, ConstInfo, DbType, IndexInfo, RunConfig, SchemaCatalog, TableDdl, TableDef,
-        ViewInfo,
+        ColumnInfo, ConstInfo, DbType, IndexInfo, RunConfig, SchemaCatalog, SchemaDdl, TableDdl,
+        TableDef, ViewInfo,
     },
 };
 
@@ -47,8 +47,8 @@ pub trait DbClient: Send + Sync {
     /// DDL 조회 (SQL 포맷 전용)
     async fn get_table_ddl(&self, schema: &str, table: &str) -> Result<TableDdl, AppError>;
 
-    /// 스키마 수준 객체 생성문 (SQL 포맷 전용, 테이블보다 먼저 실행). MySQL 은 없음
-    async fn get_schema_ddl(&self, schema: &str) -> Result<Vec<String>, AppError>;
+    /// 스키마 수준 객체 생성문 (SQL 포맷 전용) — PostgreSQL 확장·시퀀스·타입·함수, MySQL 루틴
+    async fn get_schema_ddl(&self, schema: &str) -> Result<SchemaDdl, AppError>;
 }
 
 /// enum 디스패치로 MySQL/PostgreSQL 클라이언트를 통합
@@ -118,10 +118,9 @@ impl DbClient for DbClientEnum {
         }
     }
 
-    async fn get_schema_ddl(&self, schema: &str) -> Result<Vec<String>, AppError> {
+    async fn get_schema_ddl(&self, schema: &str) -> Result<SchemaDdl, AppError> {
         match self {
-            // MySQL 은 사용자 타입이 없고 AUTO_INCREMENT 는 테이블 DDL 에 포함된다
-            Self::MySql(_) => Ok(Vec::new()),
+            Self::MySql(c) => c.get_schema_ddl(schema).await,
             Self::Pg(c) => c.get_schema_ddl(schema).await,
         }
     }

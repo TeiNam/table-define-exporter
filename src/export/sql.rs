@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::{
     error::AppError,
     identifier::{quote_identifier, quote_pg_identifier},
-    model::{DbType, RunConfig, SchemaCatalog, TableDef},
+    model::{DbType, RunConfig, SchemaCatalog, SchemaDdl, TableDef},
 };
 
 use super::Exporter;
@@ -68,7 +68,7 @@ pub struct SqlExporter {
     /// DB 종류 (식별자 인용 규칙 + Terminator 선택에 사용) — Req 14.4
     db_type: DbType,
     /// 스키마명 → 테이블보다 먼저 쓸 문장 (PostgreSQL 사용자 타입·시퀀스)
-    preambles: HashMap<String, Vec<String>>,
+    preambles: HashMap<String, SchemaDdl>,
 }
 
 impl SqlExporter {
@@ -115,8 +115,8 @@ impl Exporter for SqlExporter {
         write_cross_schema_file(&super::cross_schema_filename(name), schema, &cross_schema)
     }
 
-    fn set_schema_preamble(&mut self, schema: &str, statements: Vec<String>) {
-        self.preambles.insert(schema.to_string(), statements);
+    fn set_schema_preamble(&mut self, schema: &str, ddl: SchemaDdl) {
+        self.preambles.insert(schema.to_string(), ddl);
     }
 
     fn finish(&mut self) -> Result<(), AppError> {
@@ -293,15 +293,16 @@ fn comment_text(name: &str) -> String {
 }
 
 /// SQL 내용을 파일에 기록하는 내부 함수
+///
+/// 순서: 헤더 → 스키마 수준 객체(`objects.before`) → 테이블 → 테이블 행 타입을 쓰는 함수
+/// (`objects.after_tables`) → 뷰(참조 순서) → FK 등 모든 테이블 뒤에 둘 문장.
 fn write_sql(
     file: &mut File,
     schema: &str,
-    preamble: &[String],
+    objects: &SchemaDdl,
     tables: &[TableDef],
     db_type: DbType,
 ) -> std::io::Result<()> {
-    let terminator = Terminator::from_db_type(db_type);
-
     // 데이터베이스 헤더 주석
     writeln!(file, "/* Database : {} */", comment_text(schema))?;
     match db_type {
@@ -310,10 +311,12 @@ fn write_sql(
         DbType::Postgres => {
             // DDL 은 search_path 를 비운 채 만들어 pg_catalog 밖의 이름이 모두 스키마로 한정돼 있다.
             // 실행할 때도 비워야 public 등의 같은 이름 함수·연산자가 뷰·기본값·CHECK 에 대신 묶이지
-            // 않는다 (pg_dump 와 동일, CVE-2018-1058)
+            // 않는다 (pg_dump 와 동일, CVE-2018-1058). 함수 본문은 아직 없는 테이블을 참조할 수
+            // 있어 만들 때 검사하지 않는다 (check_function_bodies, pg_dump 와 동일)
             writeln!(
                 file,
-                "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\nSET search_path = '';"
+                "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\n\
+                 SET search_path = '';\nSET check_function_bodies = false;"
             )?;
             // DDL 이 스키마로 한정돼 있으므로 빈 DB 에서도 실행되게 스키마부터 만든다
             match quote_pg_identifier(schema) {
@@ -335,63 +338,84 @@ fn write_sql(
         )?,
     }
 
-    // 테이블이 참조하는 사용자 타입·시퀀스를 먼저 (pg_dump 와 동일)
-    if !preamble.is_empty() {
-        writeln!(file, "/* Types & Sequences */")?;
-        for statement in preamble {
-            writeln!(file, "{statement}")?;
-        }
-        writeln!(file)?;
-    }
+    // 테이블이 참조하는 확장·타입·시퀀스·함수를 먼저 (pg_dump 와 동일), MySQL 은 함수·프로시저
+    let before_label = match db_type {
+        DbType::Postgres => "/* Extensions, Types, Sequences & Functions */",
+        DbType::MySql => "/* Routines */",
+    };
+    write_section(file, before_label, &objects.before)?;
 
     // 모든 테이블을 만든 뒤 실행할 문장 (PostgreSQL FK)
     let mut deferred: Vec<&str> = Vec::new();
-    // 뷰는 참조하는 테이블이 먼저 있어야 하므로 테이블을 모두 쓴 뒤에, 뷰끼리는 참조 순서대로 쓴다.
+    for t in tables.iter().filter(|t| !t.general.is_view()) {
+        write_relation(file, schema, t, db_type, &mut deferred)?;
+    }
+    write_section(
+        file,
+        "/* Functions using table row types */",
+        &objects.after_tables,
+    )?;
+    // 뷰는 참조하는 테이블·함수가 먼저 있어야 하므로 그 뒤에, 뷰끼리는 참조 순서대로 쓴다.
     let views: Vec<&TableDef> = tables.iter().filter(|t| t.general.is_view()).collect();
-    let ordered = tables
-        .iter()
-        .filter(|t| !t.general.is_view())
-        .chain(order_views(schema, views, db_type));
-    for t in ordered {
-        // Req 2.5, 14.3: 위험 식별자를 포함한 테이블은 출력에서 스킵한다 (DROP은 더 이상
-        // 출력하지 않지만, 주석/DDL에 위험 식별자가 새는 것을 막기 위해 검증은 유지).
-        if let Err(e) = quote_table_name(db_type, &t.table_name) {
-            tracing::warn!(
-                schema,
-                table = %t.table_name,
-                error = %e,
-                "위험한 식별자를 포함한 테이블을 SQL 출력에서 스킵"
-            );
-            continue;
-        }
-
-        // 테이블 주석
-        writeln!(file, "/* Table : {} */", comment_text(&t.table_name))?;
-        // CREATE DDL만 출력 — DROP 구문은 제외. 원본을 보존하되 Terminator로 정확히 하나의 `;` 종결
-        match t.ddl.as_deref() {
-            Some(ddl) => writeln!(file, "{}\n\n", terminator.apply(ddl))?,
-            // DDL 조회에 실패한 테이블 — 빈 `;` 대신 빠졌다는 표시를 남긴다 (원인은 실행 로그의 경고)
-            None => writeln!(
-                file,
-                "/* DDL 조회 실패 — 실행 로그의 경고를 확인하세요 */\n\n"
-            )?,
-        }
-        deferred.extend(t.ddl_after.iter().map(String::as_str));
+    for t in order_views(schema, views, db_type) {
+        write_relation(file, schema, t, db_type, &mut deferred)?;
     }
 
     // FK 는 참조 대상 테이블이 모두 만들어진 뒤 추가 (pg_dump 와 동일)
-    if !deferred.is_empty() {
-        writeln!(file, "/* Foreign Keys */")?;
-        for statement in deferred {
-            writeln!(file, "{statement}")?;
-        }
-        writeln!(file)?;
-    }
+    let deferred: Vec<String> = deferred.into_iter().map(str::to_string).collect();
+    write_section(file, "/* Foreign Keys */", &deferred)?;
     if db_type == DbType::MySql {
         writeln!(file, "SET FOREIGN_KEY_CHECKS = @OLD_FOREIGN_KEY_CHECKS;")?;
         writeln!(file, "SET SQL_MODE = @OLD_SQL_MODE;")?;
     }
 
+    Ok(())
+}
+
+/// 머리 주석 + 문장들 + 빈 줄 (문장이 없으면 아무것도 쓰지 않는다)
+fn write_section(file: &mut File, label: &str, statements: &[String]) -> std::io::Result<()> {
+    if statements.is_empty() {
+        return Ok(());
+    }
+    writeln!(file, "{label}")?;
+    for statement in statements {
+        writeln!(file, "{statement}")?;
+    }
+    writeln!(file)
+}
+
+/// 테이블·뷰 하나. FK 처럼 모든 테이블 뒤에 둘 문장은 `deferred` 에 모은다.
+fn write_relation<'a>(
+    file: &mut File,
+    schema: &str,
+    t: &'a TableDef,
+    db_type: DbType,
+    deferred: &mut Vec<&'a str>,
+) -> std::io::Result<()> {
+    // Req 2.5, 14.3: 위험 식별자를 포함한 테이블은 출력에서 스킵한다 (DROP은 더 이상
+    // 출력하지 않지만, 주석/DDL에 위험 식별자가 새는 것을 막기 위해 검증은 유지).
+    if let Err(e) = quote_table_name(db_type, &t.table_name) {
+        tracing::warn!(
+            schema,
+            table = %t.table_name,
+            error = %e,
+            "위험한 식별자를 포함한 테이블을 SQL 출력에서 스킵"
+        );
+        return Ok(());
+    }
+
+    // 테이블 주석
+    writeln!(file, "/* Table : {} */", comment_text(&t.table_name))?;
+    // CREATE DDL만 출력 — DROP 구문은 제외. 원본을 보존하되 Terminator로 정확히 하나의 `;` 종결
+    match t.ddl.as_deref() {
+        Some(ddl) => writeln!(file, "{}\n\n", Terminator::from_db_type(db_type).apply(ddl))?,
+        // DDL 조회에 실패한 테이블 — 빈 `;` 대신 빠졌다는 표시를 남긴다 (원인은 실행 로그의 경고)
+        None => writeln!(
+            file,
+            "/* DDL 조회 실패 — 실행 로그의 경고를 확인하세요 */\n\n"
+        )?,
+    }
+    deferred.extend(t.ddl_after.iter().map(String::as_str));
     Ok(())
 }
 
@@ -402,7 +426,7 @@ mod tests {
     fn render(db_type: DbType, tables: &[TableDef]) -> String {
         use std::io::{Read, Seek};
         let mut file = tempfile::tempfile().unwrap();
-        write_sql(&mut file, "s", &[], tables, db_type).unwrap();
+        write_sql(&mut file, "s", &SchemaDdl::default(), tables, db_type).unwrap();
         file.rewind().unwrap();
         let mut out = String::new();
         file.read_to_string(&mut out).unwrap();
@@ -442,19 +466,30 @@ mod tests {
     }
 
     #[test]
-    fn preamble_comes_before_tables() {
+    fn schema_objects_surround_tables_in_order() {
         use std::io::{Read, Seek};
         let mut file = tempfile::tempfile().unwrap();
-        let preamble = vec!["CREATE TYPE mood AS ENUM ('ok');".to_string()];
-        let tables = [table("t", "CREATE TABLE t (m mood)", &[])];
-        write_sql(&mut file, "s", &preamble, &tables, DbType::Postgres).unwrap();
+        let objects = SchemaDdl {
+            before: vec!["CREATE TYPE mood AS ENUM ('ok');".to_string()],
+            after_tables: vec!["CREATE FUNCTION s.all_t() RETURNS SETOF s.t ..;".to_string()],
+        };
+        let mut v = table("v", "CREATE VIEW s.v AS SELECT * FROM s.all_t()", &[]);
+        v.general.table_type = "VIEW".to_string();
+        let tables = [table("t", "CREATE TABLE t (m mood)", &[]), v];
+        write_sql(&mut file, "s", &objects, &tables, DbType::Postgres).unwrap();
         file.rewind().unwrap();
         let mut out = String::new();
         file.read_to_string(&mut out).unwrap();
-        let ty = out
-            .find("/* Types & Sequences */\nCREATE TYPE mood")
-            .unwrap();
-        assert!(ty < out.find("CREATE TABLE t").unwrap(), "{out}");
+        let at = |needle: &str| out.find(needle).unwrap();
+        // 확장·타입·함수 → 테이블 → 테이블 행 타입을 쓰는 함수 → 뷰
+        let ty = at("/* Extensions, Types, Sequences & Functions */\nCREATE TYPE mood");
+        let late = at("/* Functions using table row types */\nCREATE FUNCTION s.all_t()");
+        assert!(ty < at("CREATE TABLE t"), "{out}");
+        assert!(
+            at("CREATE TABLE t") < late && late < at("CREATE VIEW s.v"),
+            "{out}"
+        );
+        assert!(out.contains("SET check_function_bodies = false;"), "{out}");
     }
 
     #[test]
@@ -478,7 +513,8 @@ mod tests {
         assert!(
             pg.contains(
                 "SET client_encoding = 'UTF8';\nSET standard_conforming_strings = on;\n\
-                 SET search_path = '';\nCREATE SCHEMA IF NOT EXISTS \"s\";"
+                 SET search_path = '';\nSET check_function_bodies = false;\n\
+                 CREATE SCHEMA IF NOT EXISTS \"s\";"
             ),
             "{pg}"
         );

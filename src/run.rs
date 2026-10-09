@@ -279,7 +279,7 @@ pub async fn run() -> Result<()> {
         // SQL: 테이블이 참조하는 사용자 타입·시퀀스를 파일 앞에 둔다 (실패해도 테이블은 출력)
         if output_format == OutputFormat::Sql {
             match db.get_schema_ddl(schema).await {
-                Ok(statements) => exporter.set_schema_preamble(schema, statements),
+                Ok(ddl) => exporter.set_schema_preamble(schema, ddl),
                 Err(e) => tracing::warn!("{} - 타입/시퀀스 DDL 조회 실패: {}", schema, e),
             }
         }
