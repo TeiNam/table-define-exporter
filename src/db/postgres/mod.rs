@@ -5,14 +5,15 @@ use crate::{
     db::try_get_or_warn,
     error::AppError,
     model::{
-        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, TableDdl,
-        TableDef, ViewInfo, fk_reference,
+        ColumnInfo, ConstInfo, GeneralInfo, IndexInfo, RunConfig, SchemaCatalog, SchemaDdl,
+        TableDdl, TableDef, ViewInfo, fk_reference,
     },
 };
 
 mod comment;
 mod ddl;
 mod foreign;
+mod functions;
 mod parse;
 mod partition;
 mod schema_ddl;
@@ -168,6 +169,7 @@ impl PgClient {
         // pg_class 는 반드시 스키마(namespace)까지 맞춰 조인한다. 이름만으로 조인하면
         // 다른 스키마의 같은 이름 테이블 수만큼 행이 늘고 코멘트도 섞인다.
         // 하위 파티션은 부모 테이블 DDL 에 PARTITION OF 로 붙으므로 목록에서 뺀다 (MySQL 처럼 테이블 하나).
+        // 확장에 속한 테이블·뷰(PostGIS 의 spatial_ref_sys 등)는 CREATE EXTENSION 이 만들므로 뺀다.
         // 머티리얼라이즈드 뷰는 information_schema.tables 에 없어서 pg_class 에서 따로 더한다.
         // 동적 쿼리 구성: except_tables LIKE 패턴 추가
         let mut query_str = String::from(
@@ -181,11 +183,17 @@ impl PgClient {
                    ON c.relnamespace = n.oid AND c.relname = t.table_name \
                  WHERE t.table_schema = $1 \
                    AND NOT COALESCE(c.relispartition, false) \
+                   AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d \
+                       WHERE d.classid = 'pg_catalog.pg_class'::regclass \
+                         AND d.objid = c.oid AND d.deptype = 'e') \
                  UNION ALL \
                  SELECT c.relname::text, 'MATERIALIZED VIEW', obj_description(c.oid, 'pg_class') \
                  FROM pg_catalog.pg_class c \
                  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
                  WHERE n.nspname = $1 AND c.relkind = 'm' \
+                   AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d \
+                       WHERE d.classid = 'pg_catalog.pg_class'::regclass \
+                         AND d.objid = c.oid AND d.deptype = 'e') \
              ) relations WHERE true",
         );
 
@@ -530,7 +538,7 @@ impl PgClient {
     }
 
     /// 스키마 수준 객체(enum/도메인/복합 타입, 시퀀스) 생성문 — SQL 파일에서 테이블보다 먼저 실행
-    pub async fn get_schema_ddl(&self, schema: &str) -> Result<Vec<String>, AppError> {
+    pub async fn get_schema_ddl(&self, schema: &str) -> Result<SchemaDdl, AppError> {
         schema_ddl::fetch_schema_ddl(&self.pool, schema).await
     }
 }

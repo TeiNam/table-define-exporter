@@ -4,11 +4,14 @@
 //! 테이블보다 먼저 만들어져 있어야 SQL 파일을 빈 DB 에 그대로 실행할 수 있다.
 //! pg_dump 처럼 스키마 파일 맨 앞에 출력한다.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::Hash;
 
 use sqlx::PgPool;
 
-use crate::{db::try_get_or_warn, error::AppError, identifier::quote_pg_identifier};
+use crate::{
+    db::try_get_or_warn, error::AppError, identifier::quote_pg_identifier, model::SchemaDdl,
+};
 
 /// 시퀀스 옵션 (`pg_sequence`)
 #[derive(Debug, Clone, PartialEq)]
@@ -22,13 +25,15 @@ pub struct PgSequence {
     pub cycle: bool,
 }
 
-/// 스키마의 사용자 타입·시퀀스 생성문. 시퀀스를 먼저(도메인 기본값이 `nextval` 을 쓸 수 있음),
-/// 그다음 enum / 도메인 / 복합 / range 타입을 `pg_depend` 의 의존 순서로 낸다 (같은 단계는 OID 순).
-/// OID 순만으로는 `ALTER TYPE c ADD ATTRIBUTE .. e` 처럼 나중에 만든 타입을 참조하게 된 경우가 깨진다.
+/// 스키마 수준 객체 생성문. 확장 → 시퀀스(도메인 기본값이 `nextval` 을 쓸 수 있음) → enum / 도메인 /
+/// 복합 / range 타입과 함수·프로시저를 `pg_depend` 의 의존 순서로 (같은 단계는 타입 먼저, OID 순).
+/// OID 순만으로는 `ALTER TYPE c ADD ATTRIBUTE .. e` 처럼 나중에 만든 타입을 참조하거나, 도메인 CHECK 가
+/// 함수를 쓰는 경우가 깨진다. 테이블 행 타입을 쓰는 함수는 테이블 뒤(`after_tables`)로 미룬다.
 ///
-/// identity 컬럼의 내부 시퀀스는 `GENERATED ... AS IDENTITY` 가 만들므로 제외한다.
+/// identity 컬럼의 내부 시퀀스는 `GENERATED ... AS IDENTITY` 가, 확장에 속한 객체는
+/// `CREATE EXTENSION` 이 만들므로 제외한다.
 // ponytail: base(C) 타입·range 의 subtype_opclass/canonical/subtype_diff·타입 코멘트·권한은 생략.
-pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<String>, AppError> {
+pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<SchemaDdl, AppError> {
     const LABEL: &str = "schema objects";
     let query_err = |e| AppError::MetadataQuery {
         schema: schema.to_string(),
@@ -54,7 +59,7 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
          FROM pg_catalog.pg_type t \
          JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
          LEFT JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid \
-         WHERE n.nspname = $1 AND t.typtype = 'e' \
+         WHERE n.nspname = $1 AND t.typtype = 'e' AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend x WHERE x.classid = 'pg_catalog.pg_type'::regclass AND x.objid = t.oid AND x.deptype = 'e') \
          GROUP BY t.oid, t.typname",
     )
     .bind(schema)
@@ -89,7 +94,7 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
          JOIN pg_catalog.pg_type bt ON bt.oid = t.typbasetype \
          LEFT JOIN pg_catalog.pg_collation co ON co.oid = t.typcollation \
          LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = co.collnamespace \
-         WHERE n.nspname = $1 AND t.typtype = 'd'",
+         WHERE n.nspname = $1 AND t.typtype = 'd' AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend x WHERE x.classid = 'pg_catalog.pg_type'::regclass AND x.objid = t.oid AND x.deptype = 'e')",
     )
     .bind(schema)
     .fetch_all(pool)
@@ -147,7 +152,7 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
          FROM pg_catalog.pg_type t \
          JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
          JOIN pg_catalog.pg_class cl ON cl.oid = t.typrelid \
-         WHERE n.nspname = $1 AND t.typtype = 'c' AND cl.relkind = 'c'",
+         WHERE n.nspname = $1 AND t.typtype = 'c' AND cl.relkind = 'c' AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend x WHERE x.classid = 'pg_catalog.pg_type'::regclass AND x.objid = t.oid AND x.deptype = 'e')",
     )
     .bind(schema)
     .fetch_all(pool)
@@ -186,7 +191,7 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
          LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = co.collnamespace \
          LEFT JOIN pg_catalog.pg_type mt ON mt.oid = (to_jsonb(r) ->> 'rngmultitypid')::oid \
          LEFT JOIN pg_catalog.pg_namespace mn ON mn.oid = mt.typnamespace \
-         WHERE n.nspname = $1 AND t.typtype = 'r'",
+         WHERE n.nspname = $1 AND t.typtype = 'r' AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend x WHERE x.classid = 'pg_catalog.pg_type'::regclass AND x.objid = t.oid AND x.deptype = 'e')",
     )
     .bind(schema)
     .fetch_all(pool)
@@ -218,6 +223,8 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
          JOIN pg_catalog.pg_sequence s ON s.seqrelid = c.oid \
          WHERE n.nspname = $1 AND c.relkind = 'S' \
+           AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend x \
+               WHERE x.classid = 'pg_catalog.pg_class'::regclass AND x.objid = c.oid AND x.deptype = 'e') \
            AND NOT EXISTS ( \
                SELECT 1 FROM pg_catalog.pg_depend d \
                WHERE d.classid = 'pg_catalog.pg_class'::regclass \
@@ -247,47 +254,125 @@ pub(super) async fn fetch_schema_ddl(pool: &PgPool, schema: &str) -> Result<Vec<
         }
     }
 
-    // 타입 간 의존 (도메인의 기반·기본값·CHECK, 복합 타입 속성, range 의 subtype). 배열 타입은 원소 타입으로.
-    // 조회에 실패해도 타입은 내보낸다 — OID 순으로 대신한다.
-    let deps = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT t.oid::int8, \
-                (CASE WHEN rt.typcategory = 'A' AND rt.typelem <> 0 \
-                      THEN rt.typelem ELSE rt.oid END)::int8 \
-         FROM pg_catalog.pg_type t \
-         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
-         JOIN pg_catalog.pg_depend d \
-           ON (d.classid = 'pg_catalog.pg_type'::regclass AND d.objid = t.oid) \
-           OR (d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = t.typrelid) \
-           OR (d.classid = 'pg_catalog.pg_constraint'::regclass AND d.objid IN ( \
-                 SELECT c.oid FROM pg_catalog.pg_constraint c WHERE c.contypid = t.oid)) \
-         JOIN pg_catalog.pg_type rt \
-           ON d.refclassid = 'pg_catalog.pg_type'::regclass AND rt.oid = d.refobjid \
-         WHERE n.nspname = $1 AND t.typtype IN ('e', 'd', 'c', 'r')",
+    let functions = super::functions::fetch_functions(pool, schema).await?;
+    let deps = fetch_dependencies(pool, schema).await;
+    let (before, after_tables) = order_types_and_functions(types, functions, &deps);
+    let mut before_tables = super::functions::fetch_extension_ddl(pool, schema).await?;
+    before_tables.extend(statements);
+    before_tables.extend(before);
+    Ok(SchemaDdl {
+        before: before_tables,
+        after_tables,
+    })
+}
+
+/// 정렬 대상 — 타입(0)과 함수(1)는 OID 공간이 달라 종류와 함께 구분한다
+type ObjectKey = (u8, i64);
+const TYPE: u8 = 0;
+const FUNCTION: u8 = 1;
+
+/// 스키마의 타입·함수가 의존하는 타입·함수 (도메인의 기반·기본값·CHECK, 복합 타입 속성, range 의
+/// subtype, 함수의 인자·반환 타입과 BEGIN ATOMIC 본문). 배열 타입은 원소 타입으로 본다.
+/// 조회에 실패해도 객체는 내보낸다 — 생성(OID) 순으로 대신한다.
+async fn fetch_dependencies(pool: &PgPool, schema: &str) -> Vec<(ObjectKey, ObjectKey)> {
+    let rows = sqlx::query_as::<_, (i32, i64, i32, i64)>(
+        "WITH objs AS ( \
+             SELECT 0 AS kind, t.oid, d.refclassid, d.refobjid \
+             FROM pg_catalog.pg_type t \
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
+             JOIN pg_catalog.pg_depend d \
+               ON (d.classid = 'pg_catalog.pg_type'::regclass AND d.objid = t.oid) \
+               OR (d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = t.typrelid) \
+               OR (d.classid = 'pg_catalog.pg_constraint'::regclass AND d.objid IN ( \
+                     SELECT c.oid FROM pg_catalog.pg_constraint c WHERE c.contypid = t.oid)) \
+             WHERE n.nspname = $1 AND t.typtype IN ('e', 'd', 'c', 'r') \
+             UNION ALL \
+             SELECT 1, p.oid, d.refclassid, d.refobjid \
+             FROM pg_catalog.pg_proc p \
+             JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace \
+             JOIN pg_catalog.pg_depend d \
+               ON d.classid = 'pg_catalog.pg_proc'::regclass AND d.objid = p.oid \
+             WHERE n.nspname = $1 \
+         ) \
+         SELECT o.kind::int4, o.oid::int8, \
+                (CASE WHEN o.refclassid = 'pg_catalog.pg_proc'::regclass THEN 1 ELSE 0 END)::int4, \
+                (CASE WHEN o.refclassid = 'pg_catalog.pg_proc'::regclass THEN o.refobjid \
+                      WHEN rt.typcategory = 'A' AND rt.typelem <> 0 THEN rt.typelem \
+                      ELSE rt.oid END)::int8 \
+         FROM objs o \
+         LEFT JOIN pg_catalog.pg_type rt \
+           ON o.refclassid = 'pg_catalog.pg_type'::regclass AND rt.oid = o.refobjid \
+         WHERE o.refclassid = 'pg_catalog.pg_proc'::regclass \
+            OR (o.refclassid = 'pg_catalog.pg_type'::regclass AND rt.oid IS NOT NULL)",
     )
     .bind(schema)
     .fetch_all(pool)
     .await
     .unwrap_or_else(|e| {
-        tracing::warn!("{schema} 타입 의존 관계 조회 실패 — 생성(OID) 순으로 출력: {e}");
+        tracing::warn!("{schema} 타입·함수 의존 관계 조회 실패 — 생성(OID) 순으로 출력: {e}");
         Vec::new()
     });
-    statements.extend(order_by_dependency(types, &deps));
-    Ok(statements)
+    let kind = |k: i32| if k == 1 { FUNCTION } else { TYPE };
+    rows.into_iter()
+        .map(|(k, oid, ref_k, ref_oid)| ((kind(k), oid), (kind(ref_k), ref_oid)))
+        .collect()
+}
+
+/// 타입·함수를 (테이블 앞, 테이블 뒤) 생성문으로. 테이블을 쓰는 함수와, 그런 함수에 (간접) 의존하는
+/// 함수는 테이블 뒤로 — 나머지는 의존 순서로 테이블 앞에 둔다.
+fn order_types_and_functions(
+    types: Vec<(i64, String)>,
+    functions: Vec<super::functions::PgFunction>,
+    deps: &[(ObjectKey, ObjectKey)],
+) -> (Vec<String>, Vec<String>) {
+    let mut after: HashSet<i64> = functions
+        .iter()
+        .filter(|f| f.uses_tables)
+        .map(|f| f.oid)
+        .collect();
+    loop {
+        let grew = deps.iter().filter_map(|&((k, oid), (rk, roid))| {
+            (k == FUNCTION && rk == FUNCTION && after.contains(&roid)).then_some(oid)
+        });
+        let grew: Vec<i64> = grew.filter(|oid| !after.contains(oid)).collect();
+        if grew.is_empty() {
+            break;
+        }
+        after.extend(grew);
+    }
+    let (late, early): (Vec<_>, Vec<_>) =
+        functions.into_iter().partition(|f| after.contains(&f.oid));
+    let early_nodes = types
+        .into_iter()
+        .map(|(oid, statement)| ((TYPE, oid), statement))
+        .chain(early.iter().map(|f| ((FUNCTION, f.oid), f.statement())))
+        .collect();
+    let late_nodes = late
+        .iter()
+        .map(|f| ((FUNCTION, f.oid), f.statement()))
+        .collect();
+    (
+        order_by_dependency(early_nodes, deps),
+        order_by_dependency(late_nodes, deps),
+    )
 }
 
 /// `(oid, 생성문)` 을 의존 순서로 — `deps` 의 `(t, d)` 는 t 가 d 를 쓴다는 뜻. 먼저 만들 수 있는
 /// 것 중 OID 가 작은 것부터 (Kahn). PostgreSQL 은 타입 순환을 막지만, 남으면 OID 순으로 붙인다.
-fn order_by_dependency(types: Vec<(i64, String)>, deps: &[(i64, i64)]) -> Vec<String> {
-    let mut statements: BTreeMap<i64, String> = types.into_iter().collect();
-    let mut dependents: HashMap<i64, Vec<i64>> = HashMap::new();
-    let mut pending: HashMap<i64, usize> = HashMap::new();
+fn order_by_dependency<K: Ord + Copy + Hash>(
+    nodes: Vec<(K, String)>,
+    deps: &[(K, K)],
+) -> Vec<String> {
+    let mut statements: BTreeMap<K, String> = nodes.into_iter().collect();
+    let mut dependents: HashMap<K, Vec<K>> = HashMap::new();
+    let mut pending: HashMap<K, usize> = HashMap::new();
     for &(t, d) in deps {
         if t != d && statements.contains_key(&t) && statements.contains_key(&d) {
             dependents.entry(d).or_default().push(t);
             *pending.entry(t).or_default() += 1;
         }
     }
-    let mut ready: BTreeSet<i64> = statements
+    let mut ready: BTreeSet<K> = statements
         .keys()
         .copied()
         .filter(|t| !pending.contains_key(t))
@@ -500,6 +585,44 @@ fn build_sequence_ddl(schema: &str, name: &str, seq: &PgSequence) -> Result<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn functions_join_type_order_and_table_users_go_after_tables() {
+        use super::super::functions::PgFunction;
+        let function = |oid, name: &str, uses_tables| PgFunction {
+            oid,
+            name: name.into(),
+            definition: format!("CREATE FUNCTION {name}()"),
+            uses_tables,
+        };
+        // 도메인 d(10) 의 CHECK 가 함수 valid(5) 를 쓰고, 함수 use_d(20) 는 d 를 인자로 받는다.
+        // all_rows(30) 는 테이블 행 타입을 돌려주고, wrap(40) 은 all_rows 를 부른다 (BEGIN ATOMIC)
+        let types = vec![(10, "CREATE DOMAIN d".to_string())];
+        let functions = vec![
+            function(5, "valid", false),
+            function(20, "use_d", false),
+            function(30, "all_rows", true),
+            function(40, "wrap", false),
+        ];
+        let deps = [
+            ((TYPE, 10), (FUNCTION, 5)),
+            ((FUNCTION, 20), (TYPE, 10)),
+            ((FUNCTION, 40), (FUNCTION, 30)),
+        ];
+        let (before, after) = order_types_and_functions(types, functions, &deps);
+        assert_eq!(
+            before,
+            [
+                "CREATE FUNCTION valid();",
+                "CREATE DOMAIN d",
+                "CREATE FUNCTION use_d();"
+            ]
+        );
+        assert_eq!(
+            after,
+            ["CREATE FUNCTION all_rows();", "CREATE FUNCTION wrap();"]
+        );
+    }
 
     #[test]
     fn types_follow_dependencies_then_oid() {

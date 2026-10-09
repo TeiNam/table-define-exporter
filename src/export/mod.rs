@@ -5,7 +5,7 @@ use std::path::Path;
 
 use crate::{
     error::AppError,
-    model::{OutputFormat, RunConfig, SchemaCatalog, TableDef},
+    model::{OutputFormat, RunConfig, SchemaCatalog, SchemaDdl, TableDef},
 };
 
 /// 출력 포맷별 구현을 위한 트레이트
@@ -16,8 +16,8 @@ pub trait Exporter {
     /// 한 스키마의 테이블 목록을 출력에 기록
     fn write_tables(&mut self, schema: &str, tables: &[TableDef]) -> Result<(), AppError>;
 
-    /// 스키마 파일에서 테이블보다 먼저 쓸 문장 (PostgreSQL 사용자 타입·시퀀스). SQL 포맷만 사용
-    fn set_schema_preamble(&mut self, _schema: &str, _statements: Vec<String>) {}
+    /// 스키마 수준 객체 생성문 (확장·타입·시퀀스·함수·루틴). SQL 포맷만 사용
+    fn set_schema_preamble(&mut self, _schema: &str, _ddl: SchemaDdl) {}
 
     /// 파일 저장/닫기
     fn finish(&mut self) -> Result<(), AppError>;

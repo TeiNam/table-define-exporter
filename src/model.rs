@@ -205,6 +205,15 @@ pub struct TableDef {
     pub ddl_cross_schema: Vec<String>,
 }
 
+/// SQL 출력용 스키마 수준 객체 생성문
+#[derive(Debug, Clone, Default)]
+pub struct SchemaDdl {
+    /// 테이블보다 먼저 (PostgreSQL 확장·시퀀스·사용자 타입·함수, MySQL 함수·프로시저)
+    pub before: Vec<String>,
+    /// 테이블을 모두 만든 뒤·뷰보다 먼저 (테이블 행 타입을 쓰는 PostgreSQL 함수)
+    pub after_tables: Vec<String>,
+}
+
 /// SQL 출력용 테이블 DDL
 #[derive(Debug, Clone, Default)]
 pub struct TableDdl {
