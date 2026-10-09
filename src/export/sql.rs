@@ -188,7 +188,8 @@ fn order_views<'a>(schema: &str, views: Vec<&'a TableDef>, db_type: DbType) -> V
     let deps: Vec<Vec<usize>> = views
         .iter()
         .map(|view| {
-            let ddl = view.ddl.as_deref().unwrap_or("");
+            let ddl = without_string_literals(view.ddl.as_deref().unwrap_or(""), db_type);
+            let ddl = ddl.as_str();
             views
                 .iter()
                 .enumerate()
@@ -208,6 +209,49 @@ fn order_views<'a>(schema: &str, views: Vec<&'a TableDef>, db_type: DbType) -> V
         ordered.push(views[next]);
     }
     ordered
+}
+
+/// 문자열 리터럴 안을 공백으로 지운 정의 — `SELECT 's.a'` 같은 리터럴 속 이름을 뷰 참조로 오인하면
+/// 가짜 순환이 생겨 실제 의존 순서까지 깨진다. 따옴표 식별자(`"it's"`, `` `it's` ``) 안의 `'` 는
+/// 리터럴이 아니고, MySQL 리터럴은 `\'` 백슬래시 이스케이프도 쓴다.
+fn without_string_literals(ddl: &str, db_type: DbType) -> String {
+    let (ident_quote, backslash) = match db_type {
+        DbType::MySql => ('`', true),
+        DbType::Postgres => ('"', false),
+    };
+    let mut out = String::with_capacity(ddl.len());
+    let mut quote: Option<char> = None;
+    let mut chars = ddl.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            None => {
+                if c == '\'' || c == ident_quote {
+                    quote = Some(c);
+                }
+                out.push(c);
+            }
+            Some('\'') => match c {
+                '\\' if backslash => {
+                    out.push(' ');
+                    if chars.next().is_some() {
+                        out.push(' ');
+                    }
+                }
+                '\'' => {
+                    quote = None;
+                    out.push(c);
+                }
+                _ => out.push(' '),
+            },
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 /// `ddl` 이 `schema.name` 뷰를 참조하는가 (DB 별 인용 형태, 앞뒤가 식별자 문자가 아닐 때만)
@@ -525,6 +569,24 @@ mod tests {
             "z_view",
             DbType::MySql
         ));
+        // 문자열 리터럴 속 이름은 참조가 아니다 — 가짜 순환으로 z 보다 a 가 먼저 나오던 문제
+        let literal = render(
+            DbType::Postgres,
+            &[
+                view("a", "CREATE VIEW \"s\".\"a\" AS\n SELECT x FROM s.z;"),
+                view("z", "CREATE VIEW \"s\".\"z\" AS\n SELECT 's.a'::text AS x;"),
+            ],
+        );
+        let at = |needle: &str| literal.find(needle).unwrap();
+        assert!(at("\"z\" AS") < at("\"a\" AS"), "{literal}");
+        assert_eq!(
+            without_string_literals(r#"SELECT 'it''s s.a', "it's" FROM s.z"#, DbType::Postgres),
+            r#"SELECT '  ''     ', "it's" FROM s.z"#
+        );
+        assert_eq!(
+            without_string_literals(r"select 'a\'`b' AS `it's` from `z`", DbType::MySql),
+            r"select '     ' AS `it's` from `z`"
+        );
         // MySQL 비한정 정의: 테이블 참조·컬럼 한정자는 의존, 같은 이름의 컬럼·별칭·DEFINER 는 아님
         let my = |ddl: &str| references_view(ddl, "s", "z_view", DbType::MySql);
         assert!(my("select `z_view`.`id` AS `id` from `z_view`"));
