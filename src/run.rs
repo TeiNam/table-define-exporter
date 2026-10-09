@@ -76,6 +76,11 @@ struct Cli {
     /// (미지정 시 공개 루트 인증서로 검증)
     #[arg(long = "ssl-ca", value_name = "FILE")]
     ssl_ca: Option<std::path::PathBuf>,
+
+    /// 경고(건너뛴 객체·조회 실패)가 하나라도 있으면 출력 파일은 그대로 두고 실패(종료 코드 1)로
+    /// 끝낸다 — 불완전한 출력을 성공으로 넘기면 안 되는 자동화용
+    #[arg(long)]
+    strict: bool,
 }
 
 impl Cli {
@@ -195,6 +200,7 @@ pub async fn run() -> Result<()> {
     tracing::info!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
     // CLI 오버라이드 변환 (clap ValueEnum이 입력값을 이미 검증)
+    let strict = cli.strict;
     let overrides = cli.into_overrides()?;
 
     // 대화식 설정 수집 (CLI 오버라이드가 있는 필드는 프롬프트 생략)
@@ -281,11 +287,15 @@ pub async fn run() -> Result<()> {
     // 파일 저장/닫기
     exporter.finish().context("Exporter finish 실패")?;
 
-    match crate::WARNINGS.load(std::sync::atomic::Ordering::Relaxed) {
+    let warnings = crate::WARNINGS.load(std::sync::atomic::Ordering::Relaxed);
+    match warnings {
         0 => tracing::info!("Export Complete."),
         n => tracing::warn!(
             "Export Complete — 경고 {n}건: 일부 객체가 빠졌을 수 있으니 위 경고를 확인하세요."
         ),
+    }
+    if strict && warnings > 0 {
+        anyhow::bail!("--strict: 경고 {warnings}건 — 출력이 불완전할 수 있어 실패로 처리합니다");
     }
     Ok(())
 }

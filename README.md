@@ -80,6 +80,7 @@ cargo build --release
 | `--except-tables` | — | 제외 테이블 패턴 (쉼표 구분, 와일드카드 `%`) |
 | `--ssl-mode` | `prefer` (PostgreSQL은 `PGSSLMODE` 환경변수가 있으면 그 값) | TLS: `disable`, `prefer`, `require`, `verify-ca`, `verify-full` ([TLS](#지원-데이터베이스) 참고) |
 | `--ssl-ca` | — | 서버 인증서를 검증할 CA 인증서(PEM) — `verify-ca`/`verify-full`과 함께 사용 |
+| `--strict` | — | 경고(건너뛴 객체·조회 실패)가 하나라도 있으면 출력은 그대로 두고 종료 코드 1로 끝냄 (자동화용) |
 | `--help` | — | 도움말 |
 | `--version` | — | 버전 정보 |
 

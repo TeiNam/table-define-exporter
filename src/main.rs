@@ -6,7 +6,9 @@
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{
+    EnvFilter, Layer, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+};
 
 mod run;
 
@@ -33,10 +35,13 @@ async fn main() -> ExitCode {
     // tracing-subscriber 초기화.
     // RUST_LOG 환경변수가 설정되어 있으면 그 값을 사용하고,
     // 없거나 파싱에 실패하면 기본값 "info"로 폴백한다.
+    //
+    // RUST_LOG 는 화면 출력에만 건다 — 전역 필터로 걸면 RUST_LOG=error 일 때 WARN 이 집계 전에
+    // 버려져 --strict 가 경고를 놓친다.
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(fmt::layer())
-        .with(WarnCounter)
+        .with(fmt::layer().with_filter(env_filter))
+        .with(WarnCounter.with_filter(LevelFilter::WARN))
         .init();
 
     match run::run().await {
